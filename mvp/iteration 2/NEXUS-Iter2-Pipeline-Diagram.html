@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEXUS Iteration 2 — Pipeline Diagram</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #1a1a2e; height: 100vh; overflow: hidden; }
+
+  /* ── LAYOUT ── */
+  .layout { display: flex; height: 100vh; transition: all 0.3s ease; }
+
+  .diagram-col {
+    flex: 0 0 100%;
+    overflow-y: auto;
+    padding: 28px 32px 40px;
+    transition: flex 0.3s ease;
+    background: #f0f2f5;
+  }
+  .layout.split .diagram-col { flex: 0 0 42%; }
+
+  /* ── SPEC PANEL ── */
+  .spec-panel {
+    flex: 0 0 0%;
+    overflow: hidden;
+    background: white;
+    border-left: 1px solid #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    transition: flex 0.3s ease;
+  }
+  .layout.split .spec-panel { flex: 0 0 58%; }
+
+  .spec-panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid #e8e8e8;
+    background: #fafafa;
+    flex-shrink: 0;
+  }
+  .spec-panel-title { font-size: 13px; font-weight: 700; color: #1a1a2e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: calc(100% - 80px); }
+  .spec-panel-actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .btn-close {
+    font-size: 11px; font-weight: 600; color: #666;
+    background: #eeeeee; border: none; border-radius: 6px;
+    padding: 4px 10px; cursor: pointer; transition: background 0.15s;
+  }
+  .btn-close:hover { background: #e0e0e0; color: #1a1a2e; }
+
+  .spec-panel-loading {
+    display: none; align-items: center; justify-content: center;
+    padding: 60px 0; color: #aaa; font-size: 13px; gap: 10px;
+  }
+  .spec-panel-loading.visible { display: flex; }
+  .spinner { width: 16px; height: 16px; border: 2px solid #e0e0e0; border-top-color: #3949ab; border-radius: 50%; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .spec-panel-body {
+    flex: 1; overflow-y: auto; padding: 24px 28px 40px;
+  }
+
+  /* ── MARKDOWN RENDERING ── */
+  .spec-panel-body h1 { font-size: 20px; font-weight: 800; margin: 0 0 6px; color: #1a1a2e; border-bottom: 2px solid #e8eaf6; padding-bottom: 10px; }
+  .spec-panel-body h2 { font-size: 15px; font-weight: 700; margin: 24px 0 8px; color: #1a1a2e; border-bottom: 1px solid #f0f0f0; padding-bottom: 6px; }
+  .spec-panel-body h3 { font-size: 13px; font-weight: 700; margin: 18px 0 6px; color: #3949ab; }
+  .spec-panel-body h4 { font-size: 12px; font-weight: 700; margin: 14px 0 4px; color: #555; }
+  .spec-panel-body p { font-size: 13px; line-height: 1.7; color: #333; margin: 0 0 12px; }
+  .spec-panel-body ul, .spec-panel-body ol { font-size: 13px; line-height: 1.7; color: #333; margin: 0 0 12px 20px; }
+  .spec-panel-body li { margin-bottom: 3px; }
+  .spec-panel-body code { font-family: 'Courier New', monospace; font-size: 11px; background: #f4f4f8; color: #c62828; padding: 1px 5px; border-radius: 4px; }
+  .spec-panel-body pre { background: #1e1e2e; border-radius: 8px; padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .spec-panel-body pre code { background: transparent; color: #cdd6f4; font-size: 11px; padding: 0; border-radius: 0; }
+  .spec-panel-body blockquote { border-left: 3px solid #3949ab; padding: 8px 16px; background: #f5f5ff; border-radius: 0 6px 6px 0; margin: 12px 0; color: #555; font-size: 13px; }
+  .spec-panel-body table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 12px 0; }
+  .spec-panel-body th { background: #3949ab; color: white; padding: 7px 10px; text-align: left; font-weight: 700; }
+  .spec-panel-body td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; color: #333; vertical-align: top; }
+  .spec-panel-body tr:nth-child(even) td { background: #fafafa; }
+  .spec-panel-body hr { border: none; border-top: 1px solid #eee; margin: 20px 0; }
+  .spec-panel-body a { color: #3949ab; }
+  .spec-panel-body strong { font-weight: 700; color: #1a1a2e; }
+
+  /* ── DIAGRAM ELEMENTS ── */
+  h1.diag { font-size: 17px; font-weight: 700; margin-bottom: 2px; }
+  .subtitle { font-size: 11px; color: #888; margin-bottom: 20px; }
+
+  .precondition { background: #fffde7; border: 1.5px dashed #f9a825; border-radius: 10px; padding: 12px 16px; margin-bottom: 6px; position: relative; }
+  .precondition-label { position: absolute; top: -10px; left: 14px; background: #f9a825; color: white; font-size: 9px; font-weight: 800; padding: 2px 9px; border-radius: 10px; letter-spacing: 0.6px; }
+
+  .iter2-boundary { border: 1.5px solid #3949ab; border-radius: 12px; padding: 16px 14px 14px; background: #f5f5ff; position: relative; }
+  .iter2-label { position: absolute; top: -11px; left: 14px; background: #3949ab; color: white; font-size: 9px; font-weight: 800; padding: 2px 10px; border-radius: 10px; letter-spacing: 0.6px; }
+
+  .start-marker { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+  .start-line { flex: 1; height: 1px; background: #3949ab; opacity: 0.25; }
+  .start-text { font-size: 9px; color: #3949ab; font-weight: 700; letter-spacing: 0.5px; white-space: nowrap; }
+
+  .stage { background: white; border: 1.5px solid #e0e0e0; border-radius: 9px; padding: 10px 13px; margin: 5px 0; display: flex; align-items: flex-start; gap: 11px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); transition: box-shadow 0.18s; }
+  .stage:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.1); }
+
+  .icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 17px; flex-shrink: 0; margin-top: 1px; }
+  .ic-blue   { background: #e3f2fd; }
+  .ic-green  { background: #e8f5e9; }
+  .ic-teal   { background: #e0f7fa; }
+  .ic-indigo { background: #e8eaf6; }
+  .ic-purple { background: #f3e5f5; }
+  .ic-pink   { background: #fce4ec; }
+  .ic-orange { background: #fff3e0; }
+  .ic-amber  { background: #fff8e1; }
+  .ic-grey   { background: #f5f5f5; }
+
+  .stage-body { flex: 1; min-width: 0; }
+  .stage-title { font-size: 12px; font-weight: 700; line-height: 1.3; }
+  .stage-note  { font-size: 10px; color: #777; margin-top: 3px; line-height: 1.5; }
+
+  .deploy-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; align-items: center; }
+  .deploy-tag { display: inline-flex; align-items: center; font-size: 9px; font-weight: 700; font-family: 'Courier New', monospace; background: #1a1a2e; color: #e8eaf6; padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+  .deploy-tag.ext { background: #424242; }
+  .deploy-tag.lib { background: #37474f; }
+  .deploy-hint { font-size: 9px; color: #aaa; }
+
+  .badges { display: flex; gap: 5px; align-items: flex-start; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; padding-top: 1px; }
+  .badge-new { background: #e8f5e9; color: #2e7d32; font-size: 8px; font-weight: 800; padding: 2px 6px; border-radius: 8px; letter-spacing: 0.4px; white-space: nowrap; }
+
+  .spec-btn {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 10px; color: #3949ab;
+    background: #e8eaf6; padding: 3px 8px; border-radius: 6px;
+    white-space: nowrap; cursor: pointer; border: none;
+    transition: background 0.12s; font-family: inherit;
+  }
+  .spec-btn:hover { background: #c5cae9; color: #1a237e; }
+  .spec-btn.active { background: #3949ab; color: white; }
+
+  .dual-ingestion { display: flex; gap: 7px; margin: 5px 0; }
+  .ingest-box { background: white; border: 1.5px solid #e0e0e0; border-radius: 9px; padding: 10px 12px; flex: 1; box-shadow: 0 1px 3px rgba(0,0,0,0.05); transition: box-shadow 0.18s; }
+  .ingest-box:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.1); }
+  .ingest-header { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
+  .ingest-title { font-size: 12px; font-weight: 700; }
+  .ingest-note  { font-size: 10px; color: #777; line-height: 1.5; margin-bottom: 6px; }
+
+  .cdc-future { border: 1.5px dashed #bdbdbd; border-radius: 6px; padding: 5px 10px; background: #fafafa; display: flex; align-items: center; gap: 7px; margin-top: 7px; }
+  .cdc-pill { font-size: 8px; font-weight: 800; background: #eeeeee; color: #757575; padding: 2px 6px; border-radius: 8px; white-space: nowrap; letter-spacing: 0.4px; }
+  .cdc-text { font-size: 10px; color: #bbb; }
+
+  .kafka { display: block; margin: 3px auto; background: #fff3e0; border: 1.5px solid #ffcc80; border-radius: 6px; padding: 3px 12px; font-size: 9px; font-family: 'Courier New', monospace; color: #e65100; text-align: center; width: fit-content; }
+  .arrow { text-align: center; color: #c0c0c0; font-size: 16px; line-height: 1; margin: 1px 0; }
+
+  .fanout { display: flex; gap: 7px; margin: 5px 0; }
+  .fan-item { flex: 1; background: white; border: 1.5px solid #e0e0e0; border-radius: 9px; padding: 10px 10px 8px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.05); transition: box-shadow 0.18s; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .fan-item:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.1); }
+  .fan-icon  { font-size: 18px; }
+  .fan-title { font-size: 11px; font-weight: 700; }
+  .fan-desc  { font-size: 9px; color: #888; line-height: 1.4; }
+
+  .register { background: #f8f0fc; border: 1.5px solid #ce93d8; border-radius: 9px; padding: 9px 13px; display: flex; align-items: center; gap: 10px; margin: 5px 0; }
+  .reg-icon { width: 32px; height: 32px; border-radius: 7px; background: #f3e5f5; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+  .reg-body { flex: 1; }
+  .reg-title  { font-size: 11px; font-weight: 700; }
+  .reg-detail { font-size: 10px; color: #888; margin-top: 2px; }
+
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 14px; font-size: 10px; color: #666; padding-top: 12px; border-top: 1px solid #ddd; }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+</style>
+</head>
+<body>
+
+<div class="layout" id="layout">
+
+  <!-- ── DIAGRAM COLUMN ── -->
+  <div class="diagram-col">
+    <h1 class="diag">NEXUS Iteration 2 — Pipeline Diagram</h1>
+    <p class="subtitle">Dual ingestion paths · Click any 📄 badge to view the spec</p>
+
+    <!-- PRECONDITION -->
+    <div class="precondition">
+      <span class="precondition-label">ITERATION 1 · PRECONDITION · DONE</span>
+      <div class="stage" style="border:none;box-shadow:none;background:transparent;padding:4px 0;margin:0;">
+        <div class="icon ic-orange">🗺️</div>
+        <div class="stage-body">
+          <div class="stage-title">CDM Mapper</div>
+          <div class="stage-note">Schema-level field → CDM mappings published to <code>cdm_proposals</code>. Tier 1/2/3 = mapping confidence. No DB records touched.</div>
+          <div class="deploy-row"><span class="deploy-tag">nexus-cdm-mapper</span></div>
+        </div>
+        <div class="badges">
+          <button class="spec-btn" onclick="loadSpec('specs/cdm-governance/NEXUS-Iter2-SVC-nexus-cdm-mapper-v0.3.md', 'CDM Mapper', this)">📄 spec</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="start-marker">
+      <div class="start-line"></div>
+      <div class="start-text">▼ &nbsp;ITERATION 2 BEGINS — first actual records read &nbsp;▼</div>
+      <div class="start-line"></div>
+    </div>
+
+    <div class="iter2-boundary">
+      <span class="iter2-label">ITERATION 2 — NEW PIPELINE</span>
+
+      <!-- Source Systems -->
+      <div class="stage">
+        <div class="icon ic-grey">🗄️</div>
+        <div class="stage-body">
+          <div class="stage-title">Source Systems</div>
+          <div class="stage-note">Raw source tables — never read in Iteration 1. CDM field mappings now applied to extract actual records for the first time.</div>
+          <div class="deploy-row">
+            <span class="deploy-tag ext">PostgreSQL</span>
+            <span class="deploy-tag ext">Salesforce</span>
+            <span class="deploy-tag ext">SAP</span>
+            <span class="deploy-tag ext">ServiceNow</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="arrow">↓</div>
+
+      <!-- DUAL INGESTION -->
+      <div class="dual-ingestion">
+
+        <div class="ingest-box">
+          <div class="ingest-header">
+            <div class="icon ic-green" style="width:32px;height:32px;font-size:15px;flex-shrink:0;">⚙️</div>
+            <div><div class="ingest-title">Batch Backfill</div></div>
+          </div>
+          <div class="ingest-note">7 Airflow DAGs: initial-load, m3-reconciliation, cdm-version-migration, promotion-backfill, demotion-cleanup, er-reindex, connector-catchup. Checkpointed — restartable from last committed offset.</div>
+          <div class="deploy-row" style="margin-bottom:7px;">
+            <span class="deploy-tag lib">Airflow DAGs</span>
+            <span class="deploy-tag lib">nexus_spark_lib</span>
+          </div>
+          <div class="badges" style="justify-content:flex-start;">
+            <span class="badge-new">NEW</span>
+            <button class="spec-btn" onclick="loadSpec('specs/developer-workstreams/NEXUS-Iter2-SPEC-Backfill-v0.1.md', 'Backfill Spec', this)">📄 Backfill spec</button>
+          </div>
+        </div>
+
+        <div class="ingest-box">
+          <div class="ingest-header">
+            <div class="icon ic-amber" style="width:32px;height:32px;font-size:15px;flex-shrink:0;">📡</div>
+            <div><div class="ingest-title">CDC Streaming</div></div>
+          </div>
+          <div class="ingest-note">Airbyte bridge polls SaaS sources → delta-compute → emits Debezium-envelope events to Kafka. Per-tenant partitioning. Schema drift detection.</div>
+          <div class="deploy-row" style="margin-bottom:7px;">
+            <span class="deploy-tag">nexus-m1-worker</span>
+            <span class="deploy-tag">nexus-airbyte-stream-bridge</span>
+          </div>
+          <div class="badges" style="justify-content:flex-start;">
+            <span class="badge-new">NEW SVC</span>
+            <button class="spec-btn" onclick="loadSpec('specs/developer-workstreams/NEXUS-Iter2-SVC-nexus-m1-worker-CDCStreaming-v0.1.md', 'CDC Streaming Spec', this)">📄 CDC spec</button>
+            <button class="spec-btn" onclick="loadSpec('specs/developer-workstreams/NEXUS-Iter2-SVC-nexus-airbyte-stream-bridge-v0.1.md', 'Airbyte Stream Bridge Spec', this)">📄 Airbyte spec</button>
+          </div>
+          <div class="cdc-future">
+            <span class="cdc-pill">PLANNED · NOT YET INTEGRATED</span>
+            <span class="cdc-text">Debezium CDC for PostgreSQL</span>
+          </div>
+        </div>
+
+      </div>
+
+      <svg viewBox="0 0 500 26" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:26px;display:block;margin:0;">
+        <line x1="125" y1="0" x2="250" y2="24" stroke="#c0c0c0" stroke-width="1.5"/>
+        <line x1="375" y1="0" x2="250" y2="24" stroke="#c0c0c0" stroke-width="1.5"/>
+        <polygon points="244,20 256,20 250,26" fill="#c0c0c0"/>
+      </svg>
+      <div class="kafka" style="margin-top:2px;">Kafka · m1.raw_records</div>
+      <div class="arrow">↓</div>
+
+      <!-- Spark Transformer -->
+      <div class="stage">
+        <div class="icon ic-teal">⚡</div>
+        <div class="stage-body">
+          <div class="stage-title">Spark Transformer</div>
+          <div class="stage-note">Type coercion · FX normalisation · entity resolution prep · Delta Lake checkpointing.</div>
+          <div class="deploy-row"><span class="deploy-tag">nexus-spark-transformer</span></div>
+        </div>
+        <div class="badges">
+          <span class="badge-new">NEW SVC</span>
+          <button class="spec-btn" onclick="loadSpec('specs/developer-workstreams/NEXUS-Iter2-SVC-nexus-spark-transformer-v0.1.md', 'Spark Transformer Spec', this)">📄 spec</button>
+        </div>
+      </div>
+
+      <div class="kafka">Kafka · m1.int.transformed_records</div>
+      <div class="arrow">↓</div>
+
+      <!-- Entity Resolution -->
+      <div class="stage" style="border-color:#66bb6a;">
+        <div class="icon ic-green">🔗</div>
+        <div class="stage-body">
+          <div class="stage-title">Entity Resolution + Golden Record Synthesis</div>
+          <div class="stage-note">3-signal ER: Jaro-Winkler · Levenshtein · Soundex+Metaphone with LSH blocking. Writes 4 registers: entity_resolution_index · golden_record_provenance · golden_records_index · golden_record_redirects.</div>
+          <div class="deploy-row">
+            <span class="deploy-tag">nexus-spark-transformer</span>
+            <span class="deploy-hint">(ER Spark job stage)</span>
+          </div>
+        </div>
+        <div class="badges">
+          <span class="badge-new">NEW IN ITER 2</span>
+          <button class="spec-btn" onclick="loadSpec('specs/developer-workstreams/NEXUS-Iter2-SPEC-ER-CRUD-v0.1.md', 'Entity Resolution & CRUD Spec', this)">📄 spec</button>
+        </div>
+      </div>
+
+      <div class="kafka">Kafka · m1.int.golden_records</div>
+      <div class="arrow">↓</div>
+
+      <!-- Materialization Coordinator -->
+      <div class="stage">
+        <div class="icon ic-indigo">🎛️</div>
+        <div class="stage-body">
+          <div class="stage-title">Materialization Coordinator</div>
+          <div class="stage-note">Policy evaluation → HOT / WARM / COLD tier assignment. RLHF training loop. M4 admin API for data steward overrides.</div>
+          <div class="deploy-row">
+            <span class="deploy-tag">nexus-m1-worker</span>
+            <span class="deploy-hint">(policy evaluation stage)</span>
+          </div>
+        </div>
+        <div class="badges">
+          <span class="badge-new">NEW</span>
+          <button class="spec-btn" onclick="loadSpec('specs/developer-workstreams/NEXUS-Iter2-SPEC-MaterializationCoordinator-v0.1.md', 'Materialization Coordinator Spec', this)">📄 spec</button>
+        </div>
+      </div>
+
+      <div class="arrow">↓</div>
+
+      <!-- M3 Writers -->
+      <div class="stage" style="border-color:#ab47bc;">
+        <div class="icon ic-purple">✍️</div>
+        <div class="stage-body">
+          <div class="stage-title">M3 Writers</div>
+          <div class="stage-note">Fan-out write to three AI stores. Virtual CDM: IDs, embeddings, metrics only — no raw business field values stored. Cross-store reconciliation + drift detection.</div>
+          <div class="deploy-row"><span class="deploy-tag">nexus-m3-writer</span></div>
+        </div>
+        <div class="badges">
+          <span class="badge-new">NEW SVC</span>
+          <button class="spec-btn" onclick="loadSpec('specs/ai-stores/NEXUS-Iter2-SVC-nexus-m3-writer-stores-v0.1.md', 'M3 Writer Master Spec', this)">📄 spec</button>
+        </div>
+      </div>
+
+      <div class="arrow">↓</div>
+
+      <!-- Three AI Stores -->
+      <div class="fanout">
+        <div class="fan-item">
+          <div class="fan-icon">🔍</div>
+          <div class="fan-title">Elasticsearch</div>
+          <div class="fan-desc">kNN vector search<br>1536-dim embeddings<br>cosine similarity</div>
+          <div class="deploy-row" style="justify-content:center;"><span class="deploy-tag ext">Elasticsearch</span></div>
+          <button class="spec-btn" style="margin-top:5px;" onclick="loadSpec('specs/ai-stores/NEXUS-Iter2-SVC-nexus-m3-writer-elasticsearch-v0.1.md', 'Elasticsearch Handler Spec', this)">📄 ES spec</button>
+        </div>
+        <div class="fan-item">
+          <div class="fan-icon">🕸️</div>
+          <div class="fan-title">Neo4j</div>
+          <div class="fan-desc">Property graph<br>Entity relationships<br>OrgChart hierarchies</div>
+          <div class="deploy-row" style="justify-content:center;"><span class="deploy-tag ext">Neo4j</span></div>
+          <button class="spec-btn" style="margin-top:5px;" onclick="loadSpec('specs/ai-stores/NEXUS-Iter2-SVC-nexus-m3-writer-neo4j-v0.1.md', 'Neo4j Handler Spec', this)">📄 Neo4j spec</button>
+        </div>
+        <div class="fan-item">
+          <div class="fan-icon">📈</div>
+          <div class="fan-title">TimescaleDB</div>
+          <div class="fan-desc">Time-series metrics<br>3 continuous aggregates<br>FX-normalised</div>
+          <div class="deploy-row" style="justify-content:center;"><span class="deploy-tag ext">TimescaleDB</span></div>
+          <button class="spec-btn" style="margin-top:5px;" onclick="loadSpec('specs/ai-stores/NEXUS-Iter2-SVC-nexus-m3-writer-timescaledb-v0.1.md', 'TimescaleDB Handler Spec', this)">📄 TS spec</button>
+        </div>
+      </div>
+
+      <div class="arrow">↓</div>
+
+      <!-- entity_store_presence -->
+      <div class="register">
+        <div class="reg-icon">📋</div>
+        <div class="reg-body">
+          <div class="reg-title">entity_store_presence</div>
+          <div class="reg-detail">es_present · neo4j_present · ts_present — boolean flags set TRUE on each confirmed write. PK: (tenant_id, cdm_entity_id). Direct SQL — no cache.</div>
+          <div class="deploy-row" style="margin-top:5px;">
+            <span class="deploy-tag">nexus-m3-writer</span>
+            <span class="deploy-hint">(owned + written)</span>
+          </div>
+        </div>
+        <div class="badges">
+          <button class="spec-btn" onclick="loadSpec('specs/developer-workstreams/NEXUS-Iter2-SPEC-PipelineRegisters-v0.1.md', 'Pipeline Registers Spec', this)">📄 spec</button>
+        </div>
+      </div>
+
+      <div class="arrow">↓</div>
+
+      <!-- Query Engine -->
+      <div class="stage" style="border-color:#1565c0;">
+        <div class="icon ic-blue">🔎</div>
+        <div class="stage-body">
+          <div class="stage-title">Query Engine</div>
+          <div class="stage-note">Reads entity_store_presence → dispatches to live stores. Two-phase lookup: Phase 1 = IDs/vectors/metrics; Phase 2 = live source fetch for business fields. OPA field-level auth.</div>
+          <div class="deploy-row">
+            <span class="deploy-tag">nexus-query-api</span>
+            <span class="deploy-tag">nexus-query-executor</span>
+          </div>
+        </div>
+        <div class="badges">
+          <span class="badge-new">NEW SVC</span>
+          <button class="spec-btn" onclick="loadSpec('specs/query-frontend/NEXUS-Iter2-SVC-nexus-query-api-nexus-query-executor-v0.3.md', 'Query Engine Spec', this)">📄 spec</button>
+        </div>
+      </div>
+
+      <div class="arrow">↓</div>
+
+      <!-- Frontend -->
+      <div class="stage">
+        <div class="icon ic-pink">🖥️</div>
+        <div class="stage-body">
+          <div class="stage-title">React Frontend</div>
+          <div class="stage-note">Streaming result renderer · ChartSpec visualisations · Dashboard grid. M2 RHMA chat panel deprecated.</div>
+          <div class="deploy-row"><span class="deploy-tag">nexus-m6-frontend</span></div>
+        </div>
+        <div class="badges">
+          <button class="spec-btn" onclick="loadSpec('specs/query-frontend/NEXUS-Iter2-SPEC-M6-FrontendDelta-v0.2.md', 'Frontend Delta Spec', this)">📄 spec</button>
+        </div>
+      </div>
+
+    </div><!-- end iter2-boundary -->
+
+    <div class="legend">
+      <div class="legend-item"><span class="badge-new">NEW SVC</span> New standalone service</div>
+      <div class="legend-item"><span class="badge-new">NEW</span> New in Iteration 2</div>
+      <div class="legend-item"><span style="border:1px dashed #bdbdbd;padding:2px 6px;border-radius:4px;font-size:9px;color:#999;">PLANNED</span> Not yet integrated</div>
+      <div class="legend-item"><span class="deploy-tag" style="font-size:9px;">nexus-svc</span> NEXUS service</div>
+      <div class="legend-item"><span class="deploy-tag ext" style="font-size:9px;">infra</span> External / infra</div>
+      <div class="legend-item"><span class="deploy-tag lib" style="font-size:9px;">lib/dag</span> Library or DAG</div>
+    </div>
+
+  </div><!-- end diagram-col -->
+
+  <!-- ── SPEC PANEL ── -->
+  <div class="spec-panel" id="specPanel">
+    <div class="spec-panel-header">
+      <div class="spec-panel-title" id="specTitle">—</div>
+      <div class="spec-panel-actions">
+        <button class="btn-close" onclick="closeSpec()">✕ Close</button>
+      </div>
+    </div>
+    <div class="spec-panel-loading" id="specLoading">
+      <div class="spinner"></div> Loading spec…
+    </div>
+    <div class="spec-panel-body" id="specBody"></div>
+  </div>
+
+</div><!-- end layout -->
+
+<script>
+  let activeBtn = null;
+
+  async function loadSpec(path, title, btn) {
+    // Toggle off if clicking the same button
+    if (activeBtn === btn && document.getElementById('layout').classList.contains('split')) {
+      closeSpec();
+      return;
+    }
+
+    // Mark active button
+    if (activeBtn) activeBtn.classList.remove('active');
+    activeBtn = btn;
+    btn.classList.add('active');
+
+    // Open panel
+    document.getElementById('layout').classList.add('split');
+    document.getElementById('specTitle').textContent = title;
+    document.getElementById('specBody').innerHTML = '';
+    document.getElementById('specLoading').classList.add('visible');
+
+    try {
+      const res = await fetch(path);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const md = await res.text();
+      document.getElementById('specLoading').classList.remove('visible');
+      document.getElementById('specBody').innerHTML = marked.parse(md);
+    } catch (e) {
+      document.getElementById('specLoading').classList.remove('visible');
+      document.getElementById('specBody').innerHTML =
+        `<p style="color:#c62828;padding:20px 0;">Could not load spec file.<br><small>${e.message}</small></p>`;
+    }
+  }
+
+  function closeSpec() {
+    document.getElementById('layout').classList.remove('split');
+    document.getElementById('specPanel').style.flex = '';
+    if (activeBtn) { activeBtn.classList.remove('active'); activeBtn = null; }
+  }
+</script>
+</body>
+</html>

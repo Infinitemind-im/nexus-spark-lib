@@ -1,0 +1,35 @@
+"""
+nexus_spark_lib — Shared Spark transformation library for the NEXUS platform pipeline.
+
+Public API surface (stable, SemVer):
+    from nexus_spark_lib.transform import (
+        normalise,
+        resolve,
+        synthesise,
+        materialization_decide,
+    )
+    from nexus_spark_lib.kafka import write_transformed_records
+
+Every NEXUS service that runs Spark pipeline stages imports from here.
+CDC Streaming and Batch Backfill pin a specific version of this library per release.
+Breaking changes require a major version bump and a platform-wide coordination window.
+"""
+
+__version__ = "0.1.0"
+
+from nexus_spark_lib.transform import (
+    materialization_decide,
+    normalise,
+    resolve,
+    synthesise,
+)
+from nexus_spark_lib.kafka import write_transformed_records
+
+__all__ = [
+    "normalise",
+    "resolve",
+    "synthesise",
+    "materialization_decide",
+    "write_transformed_records",
+    "__version__",
+]
