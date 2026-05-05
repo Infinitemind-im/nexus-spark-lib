@@ -101,3 +101,25 @@ class GoldenRecordStateMachine:
         ER_STATE_TRANSITIONS.labels(
             from_state="new", to_state="provisional", tenant_id=self._tenant_id
         ).inc()
+
+    async def split(
+        self,
+        source_entity_id: str,
+        new_entity_id: str,
+        cdm_entity_type: str,
+    ) -> None:
+        """Re-activate the source GR after a SPLIT (SUPERSEDED → ACTIVE).
+
+        Called when two previously merged entities are determined to be distinct.
+        The source entity (formerly the MERGE loser) is re-activated as its own
+        independent Golden Record.
+        """
+        await upsert_golden_record(
+            self._conn, source_entity_id, self._tenant_id, cdm_entity_type,
+            state=GoldenRecordState.ACTIVE,
+            state_change_reason=f"split_from:{new_entity_id}",
+        )
+        ER_STATE_TRANSITIONS.labels(
+            from_state="superseded", to_state="active", tenant_id=self._tenant_id
+        ).inc()
+        logger.info("SPLIT: %s re-activated from %s", source_entity_id, new_entity_id)

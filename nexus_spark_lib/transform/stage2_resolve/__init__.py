@@ -62,11 +62,21 @@ def resolve(
         source_system: str,
         source_record_id: str,
         normalised_json: str,
+        materialization_level: str,
     ) -> str:
         import json
         import time
 
         t0 = time.perf_counter()
+
+        # --- FR-Dev3-M-03: materialization_level short-circuit ---
+        # COLD records skip ER entirely — no I/O, just generate a fresh ID.
+        mat_level = (materialization_level or "warm").lower()
+        if mat_level == "cold":
+            ER_RECORDS.labels(tenant_id=tenant_id, status="cold_skip").inc()
+            return generate_cdm_entity_id(
+                tenant_id, cdm_entity_type, f"{cdm_entity_type}|{source_record_id}"
+            )
 
         er_index = er_index_broadcast.value
         blocking_key = f"{cdm_entity_type}|{source_record_id}"
@@ -82,7 +92,7 @@ def resolve(
         # --- 3-signal resolution ---
         fields = json.loads(normalised_json or "{}")
 
-        # Signal A — deterministic
+        # Signal A — deterministic (WARM and HOT both run Signal A)
         result_a = run_signal_a(
             tenant_id=tenant_id,
             cdm_entity_type=cdm_entity_type,
@@ -94,7 +104,13 @@ def resolve(
             ER_RECORDS.labels(tenant_id=tenant_id, status="signal_a").inc()
             return result_a
 
-        # Signal B — probabilistic
+        # --- FR-Dev3-M-03: WARM runs Signal A only ---
+        # No Signal A match — WARM skips probabilistic signals, generates new ID.
+        if mat_level == "warm":
+            ER_RECORDS.labels(tenant_id=tenant_id, status="warm_new").inc()
+            return generate_cdm_entity_id(tenant_id, cdm_entity_type, blocking_key)
+
+        # HOT — Signal B and C
         score_b, candidate_b = run_signal_b(
             tenant_id=tenant_id,
             cdm_entity_type=cdm_entity_type,
@@ -142,5 +158,6 @@ def resolve(
             F.col("source_system"),
             F.col("source_record_id"),
             F.col("normalised_json"),
+            F.col("materialization_level"),
         ),
     )
