@@ -33,9 +33,6 @@ dependencies = [
     "datasketch>=1.6",
     # Async PostgreSQL (DB writes from Spark executors via asyncio)
     "asyncpg>=0.29",
-    # Date parsing helpers
-    "python-dateutil>=2.8",
-    "pytz>=2024.1",
 ]
 
 [project.optional-dependencies]
