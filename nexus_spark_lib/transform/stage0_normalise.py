@@ -1,33 +1,32 @@
 """Stage 0 — Normalisation.
 
-First stage in the pipeline. Transforms raw, heterogeneous field values into
-CDM-typed, quality-scored TransformedField objects. Must run before
-stage1_materialization so that CDM field values are available for policy
-predicate evaluation.
+First stage in the pipeline. Applies CDM field mapping to raw, already-typed
+payloads and produces quality-scored normalised fields.
 
 Pipeline order:
     reader.py → stage0_normalise → stage1_materialization → stage2_resolve → stage3_synthesise
 
-Responsibilities (per NEXUS-Iter2-SPEC-DataModel-v0.5):
+Responsibilities (BUSINESS LOGIC ONLY):
   1. CDM field mapping via broadcast (connector_id × source_table → cdm_entity_type + field map)
-  2. Type coercion:
-       - Dates/datetimes → ISO 8601 (UTC); malformed dates go to source_extras, NOT nulled
-       - Decimal → Python Decimal via string normalisation
-       - Boolean → True/False from BOOL_TRUE/FALSE_VALUES sets
-       - Null normalisation from NULL_LIKE_STRINGS frozenset
-  3. FX currency conversion at source_ts using FxRates.convert()
-  4. DQ scoring → FieldQuality per field
-  5. Deduplication on natural key within the micro-batch
-  6. Update schema_snapshots (best-effort, no abort on failure)
+  2. CRUD routing: DELETE → before_payload, INSERT/UPDATE/SNAPSHOT_READ/RELEVEL → after_payload
+  3. FX currency conversion at source_ts rate (NOT the processing-time rate) — business rule
+  4. DQ scoring: proportion of mapped fields / total fields in payload — business rule
+  5. Fields with no CDM mapping → source_extras
 
-p95 latency target: not explicitly spec'd for Stage 0; keep O(n × fields).
+NOT in scope (belongs to nexus-spark-transformer before calling this lib):
+  - Type coercion (dates, booleans, decimals, strings)
+  - Strip whitespace / null-like string normalisation
+  - Within-batch deduplication
+  - Kafka offset management
+  - Spark configuration
+
+The transformer calls this function AFTER cleaning and typing the data.
+All values in after_payload / before_payload are already clean Python-native types.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from pyspark.broadcast import Broadcast
@@ -35,20 +34,8 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType, StructField, StructType
 
-from nexus_spark_lib.config.constants import (
-    BOOL_FALSE_VALUES,
-    BOOL_TRUE_VALUES,
-    DATE_FORMATS,
-    DATETIME_FORMATS,
-    NULL_LIKE_STRINGS,
-)
-from nexus_spark_lib.models.materialization import MaterializationLevel
-from nexus_spark_lib.models.raw_record import SourceOp
-from nexus_spark_lib.models.transformed_record import (
-    FieldQuality,
-    TransformedField,
-)
-from nexus_spark_lib.observability.metrics import NORMALISE_LATENCY, NORMALISE_RECORDS
+from nexus_spark_lib.models.transformed_record import FieldQuality
+from nexus_spark_lib.observability.metrics import NORMALISE_RECORDS
 from nexus_spark_lib.observability.structured_log import get_stage_logger
 
 logger = get_stage_logger(__name__)
@@ -63,21 +50,24 @@ def normalise(
     cdm_mapping_broadcast: Broadcast,
     fx_rates_broadcast: Broadcast,
 ) -> DataFrame:
-    """Apply CDM normalisation to each raw record.
+    """Apply CDM field mapping, CRUD routing, FX conversion and DQ scoring.
+
+    Precondition: df contains clean, already-typed values in after_payload /
+    before_payload. Type coercion and null normalisation are the transformer's
+    responsibility and must be done before calling this function.
 
     Args:
-        df:                   Parsed raw-record DataFrame (from kafka/reader.py).
-        cdm_mapping_broadcast: Broadcast[CdmMappingBroadcast] with field mappings.
-        fx_rates_broadcast:   Broadcast[FxRatesBroadcast] with historical FX rates.
+        df:                    Parsed raw-record DataFrame (from kafka/reader.py).
+        cdm_mapping_broadcast: Broadcast[CdmMappingBroadcast] — field maps per connector.
+        fx_rates_broadcast:    Broadcast[FxRatesBroadcast] — historical FX rates.
 
     Returns:
         DataFrame with added columns:
-        - cdm_entity_type  (str)
-        - cdm_entity_id    (str, populated by Stage 2)
-        - normalised_json  (str, JSON-encoded dict of TransformedField)
-        - source_extras    (str, JSON-encoded leftover/failed-coerce fields)
-        - dq_score         (float)
-        - dedup_key        (str, natural key for within-batch dedup)
+        - cdm_entity_type  (str)   — resolved from connector_id × source_table
+        - normalised_json  (str)   — JSON: cdm_attr → {value, quality, source_attribute, pii_flag}
+        - source_extras    (str)   — JSON: unmapped raw fields
+        - dq_score         (str)   — serialised float: mapped_fields / total_fields
+        - dedup_key        (str)   — natural key: tenant_id|cdm_entity_type|source_record_id
     """
     normalise_udf = F.udf(
         _normalise_row(cdm_mapping_broadcast, fx_rates_broadcast),
@@ -105,10 +95,7 @@ def normalise(
         F.col("_norm.dedup_key").alias("dedup_key"),
     ).drop("_norm")
 
-    # Within-batch deduplication: keep latest by source_ts per natural key
-    enriched = _dedup_batch(enriched)
-
-    NORMALISE_RECORDS.labels(status="ok").inc(enriched.count())
+    NORMALISE_RECORDS.labels(status="ok").inc()
     return enriched
 
 
@@ -120,7 +107,7 @@ _NORMALISE_OUTPUT_SCHEMA = StructType([
     StructField("cdm_entity_type", StringType(), True),
     StructField("normalised_json", StringType(), True),
     StructField("source_extras", StringType(), True),
-    StructField("dq_score", StringType(), True),   # serialised float as string
+    StructField("dq_score", StringType(), True),
     StructField("dedup_key", StringType(), True),
 ])
 
@@ -138,67 +125,63 @@ def _normalise_row(cdm_mapping_bc: Broadcast, fx_rates_bc: Broadcast):
         after_payload: dict | None,
         before_payload: dict | None,
     ) -> tuple:
-        import time
-        t0 = time.perf_counter()
-
         mapping = cdm_mapping_bc.value
         fx_rates = fx_rates_bc.value
 
-        # Determine CDM entity type from connector × source_table
+        # --- Business rule 1: CDM field mapping ---
         cdm_entity_type = _resolve_cdm_type(mapping, connector_id, source_table)
         field_map = _resolve_field_map(mapping, connector_id, source_table)
 
-        # Choose payload (after for INSERT/UPDATE/SNAPSHOT_READ/RELEVEL; before for DELETE)
+        # --- Business rule 2: CRUD routing ---
+        # DELETE uses before_payload (the row as it existed before deletion).
+        # All other ops (INSERT, UPDATE, SNAPSHOT_READ, RELEVEL) use after_payload.
         op = source_op or "INSERT"
         payload: dict[str, Any] = {}
-        if op in ("DELETE",):
+        if op == "DELETE":
             payload = dict(before_payload or {})
         else:
             payload = dict(after_payload or {})
 
-        transformed_fields: dict[str, dict] = {}
+        normalised_fields: dict[str, dict] = {}
         source_extras: dict[str, Any] = {}
 
         for raw_key, raw_value in payload.items():
             cdm_attr = field_map.get(raw_key)
             if cdm_attr is None:
-                # No mapping → goes to source_extras
+                # No CDM mapping — preserve in source_extras unchanged
                 source_extras[raw_key] = raw_value
                 continue
 
-            coerced, quality, extra = _coerce_field(
-                cdm_attr=cdm_attr,
-                raw_key=raw_key,
+            # --- Business rule 3: FX conversion at source_ts ---
+            field_meta = field_map.get(f"__meta__{raw_key}", {})
+            value, quality = _apply_fx_if_monetary(
                 raw_value=raw_value,
-                field_map_meta=field_map.get(f"__meta__{raw_key}", {}),
+                field_meta=field_meta,
                 source_ts=source_ts,
                 fx_rates=fx_rates,
                 tenant_id=tenant_id,
             )
-            if extra is not None:
-                source_extras[f"_fail_{raw_key}"] = raw_value
-            elif coerced is not None:
-                transformed_fields[cdm_attr] = {
-                    "value": _safe_str(coerced),
-                    "quality": quality.value,
-                    "source_attribute": raw_key,
-                    "pii_flag": False,  # PII classification done by CDM mapping service
-                }
 
-        # DQ score = proportion of successfully mapped fields / total fields in payload
+            normalised_fields[cdm_attr] = {
+                "value": value,
+                "quality": quality.value,
+                "source_attribute": raw_key,
+                "pii_flag": bool(field_meta.get("pii", False)),
+            }
+
+        # --- Business rule 4: DQ score ---
+        # Proportion of payload fields that have a CDM mapping.
+        # Fields that went to source_extras count as unmapped.
         total = len(payload)
-        mapped = len(transformed_fields)
+        mapped = len(normalised_fields)
         dq_score = round(mapped / total, 4) if total > 0 else 1.0
 
-        # Natural key for dedup: tenant + entity_type + source_record_id
         dedup_key = f"{tenant_id}|{cdm_entity_type}|{source_record_id}"
-
-        elapsed = time.perf_counter() - t0
 
         return (
             cdm_entity_type,
-            json.dumps(transformed_fields),
-            json.dumps(source_extras),
+            json.dumps(normalised_fields, default=str),
+            json.dumps(source_extras, default=str),
             str(dq_score),
             dedup_key,
         )
@@ -207,126 +190,52 @@ def _normalise_row(cdm_mapping_bc: Broadcast, fx_rates_bc: Broadcast):
 
 
 # ---------------------------------------------------------------------------
-# Coercion helpers
+# Business logic helpers
 # ---------------------------------------------------------------------------
 
-def _coerce_field(
-    cdm_attr: str,
-    raw_key: str,
+def _apply_fx_if_monetary(
     raw_value: Any,
-    field_map_meta: dict,
+    field_meta: dict,
     source_ts: Any,
     fx_rates: Any,
     tenant_id: str,
-) -> tuple[Any, FieldQuality, Any]:
-    """Coerce a single raw field to its CDM type.
+) -> tuple[Any, FieldQuality]:
+    """Apply FX conversion if this field is monetary.
 
-    Returns (coerced_value, FieldQuality, failure_extra).
-    If failure_extra is not None, coercion failed and caller should route to source_extras.
+    Business rule: use the rate at source_ts, NOT the processing time.
+    If the field is not monetary, or FX data is unavailable, return unchanged.
     """
-    if raw_value is None or (isinstance(raw_value, str) and raw_value.strip().upper() in NULL_LIKE_STRINGS):
-        return (None, FieldQuality.MISSING, None)
+    if raw_value is None:
+        return (None, FieldQuality.MISSING)
 
-    target_type = field_map_meta.get("type", "string")
+    src_currency = field_meta.get("currency_field")
+    if not src_currency or fx_rates is None or source_ts is None:
+        return (raw_value, FieldQuality.GOOD)
 
+    target_currency = field_meta.get("target_currency", "USD")
     try:
-        if target_type == "decimal":
-            coerced = Decimal(str(raw_value).replace(",", "."))
-            # FX conversion if currency metadata available
-            currency = field_map_meta.get("currency_field")
-            if currency and fx_rates and source_ts:
-                src_cur = str(currency)
-                target_cur = field_map_meta.get("target_currency", "USD")
-                try:
-                    ts = _parse_ts(source_ts)
-                    result = fx_rates.value.convert(coerced, src_cur, target_cur, ts)
-                    coerced = result.converted_amount
-                except Exception:
-                    pass  # Use original amount if FX lookup fails
-            return (coerced, FieldQuality.GOOD, None)
-
-        elif target_type in ("date", "datetime"):
-            coerced = _parse_date_field(str(raw_value), target_type)
-            if coerced is None:
-                return (None, FieldQuality.MISSING, raw_value)  # Route to source_extras
-            return (coerced, FieldQuality.GOOD, None)
-
-        elif target_type == "boolean":
-            val_upper = str(raw_value).strip().upper()
-            if val_upper in BOOL_TRUE_VALUES:
-                return (True, FieldQuality.GOOD, None)
-            elif val_upper in BOOL_FALSE_VALUES:
-                return (False, FieldQuality.GOOD, None)
-            else:
-                return (None, FieldQuality.SUSPECT, None)
-
-        else:  # string
-            return (str(raw_value), FieldQuality.GOOD, None)
-
-    except (InvalidOperation, ValueError, TypeError):
-        return (None, FieldQuality.SUSPECT, raw_value)
-
-
-def _parse_date_field(raw: str, kind: str) -> str | None:
-    """Parse a raw string as a date or datetime. Returns ISO 8601 string or None."""
-    formats = DATETIME_FORMATS if kind == "datetime" else DATE_FORMATS
-    for fmt in formats:
-        try:
-            dt = datetime.strptime(raw.strip(), fmt)
-            if kind == "datetime":
-                return dt.replace(tzinfo=timezone.utc).isoformat()
-            return dt.date().isoformat()
-        except ValueError:
-            continue
-    return None  # Caller routes to source_extras — never silent null
-
-
-def _parse_ts(source_ts: Any) -> datetime:
-    if isinstance(source_ts, datetime):
-        return source_ts
-    return datetime.fromisoformat(str(source_ts))
-
-
-def _safe_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value)
+        from datetime import datetime
+        ts = source_ts if isinstance(source_ts, datetime) else datetime.fromisoformat(str(source_ts))
+        result = fx_rates.convert(raw_value, str(src_currency), target_currency, ts)
+        return (result.converted_amount, FieldQuality.GOOD)
+    except Exception:
+        # FX lookup failed — return original value, flag as suspect
+        return (raw_value, FieldQuality.SUSPECT)
 
 
 # ---------------------------------------------------------------------------
-# CDM mapping resolution helpers (from broadcast)
+# CDM mapping resolution helpers (read from broadcast — no I/O)
 # ---------------------------------------------------------------------------
 
 def _resolve_cdm_type(mapping: Any, connector_id: str, source_table: str) -> str:
-    """Resolve the CDM entity type for a connector × source_table combination."""
     try:
-        return mapping.value.get_cdm_entity_type(connector_id, source_table) or "unknown"
+        return mapping.get_cdm_entity_type(connector_id, source_table) or "unknown"
     except Exception:
         return "unknown"
 
 
 def _resolve_field_map(mapping: Any, connector_id: str, source_table: str) -> dict:
-    """Resolve field mapping dict for a connector × source_table combination."""
     try:
-        return mapping.value.get_field_map(connector_id, source_table) or {}
+        return mapping.get_field_map(connector_id, source_table) or {}
     except Exception:
         return {}
-
-
-# ---------------------------------------------------------------------------
-# Within-batch deduplication
-# ---------------------------------------------------------------------------
-
-def _dedup_batch(df: DataFrame) -> DataFrame:
-    """Keep the latest record per natural key (dedup_key) within the micro-batch."""
-    from pyspark.sql.window import Window
-    window = Window.partitionBy("dedup_key").orderBy(F.col("source_ts").desc())
-    return (
-        df.withColumn("_rn", F.row_number().over(window))
-        .filter(F.col("_rn") == 1)
-        .drop("_rn")
-    )

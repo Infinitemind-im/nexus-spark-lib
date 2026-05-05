@@ -77,40 +77,6 @@ ER_SIGNAL_C_DEPTH1_LIFT = 0.05
 ER_SIGNAL_C_DEPTH2_LIFT = 0.02
 ER_SIGNAL_C_MAX_LIFT = 0.10
 
-# ── Null-like string values normalised to Python None in Stage 1 ───────────────
-
-NULL_LIKE_STRINGS: frozenset[str] = frozenset(
-    {"null", "NULL", "N/A", "n/a", "NA", "na", "none", "None", "NONE", ""}
-)
-
-# ── Boolean normalisation map ──────────────────────────────────────────────────
-
-BOOL_TRUE_VALUES: frozenset[str] = frozenset(
-    {"true", "True", "TRUE", "yes", "Yes", "YES", "1", "on", "On", "ON"}
-)
-BOOL_FALSE_VALUES: frozenset[str] = frozenset(
-    {"false", "False", "FALSE", "no", "No", "NO", "0", "off", "Off", "OFF"}
-)
-
-# ── Date formats tried during ISO 8601 coercion ───────────────────────────────
-
-DATE_FORMATS: list[str] = [
-    "%Y-%m-%d",
-    "%d/%m/%Y",
-    "%m/%d/%Y",
-    "%Y%m%d",
-    "%d-%m-%Y",
-]
-
-DATETIME_FORMATS: list[str] = [
-    "%Y-%m-%dT%H:%M:%SZ",
-    "%Y-%m-%dT%H:%M:%S",
-    "%Y-%m-%dT%H:%M:%S.%fZ",
-    "%Y-%m-%dT%H:%M:%S.%f",
-    "%Y-%m-%d %H:%M:%S",
-    "%Y-%m-%d %H:%M:%S.%f",
-]
-
 # ── Batch checkpointing ────────────────────────────────────────────────────────
 
 BATCH_CHECKPOINT_INTERVAL = 10_000    # Write checkpoint every N records
