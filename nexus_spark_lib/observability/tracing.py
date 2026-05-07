@@ -41,7 +41,7 @@ def stage_span(
     """Context manager that wraps a pipeline stage in an OpenTelemetry span.
 
     Usage:
-        with stage_span("stage0_normalise", tenant_id=tenant_id) as span:
+        with stage_span("stage1_normalise", tenant_id=tenant_id) as span:
             span.set_attribute("record_count", len(batch))
             # ... do work ...
     """

@@ -26,12 +26,12 @@ Records flow through four stages in order:
 
 | Stage | Module | Purpose |
 |-------|--------|---------|
-| Stage 0 | `transform.stage0_normalise` | Type coercion, FX conversion, DQ scoring, deduplication |
-| Stage 1 | `transform.stage1_materialization` | HOT / WARM / COLD tier decision (uses normalised values) |
+| Stage 0 | `transform.stage0_materialization` | Materialization gate — HOT / WARM / COLD tier decision on raw payload, resolves cdm_entity_type |
+| Stage 1 | `transform.stage1_normalise` | Type coercion, FX conversion, DQ scoring, blocking key, deduplication |
 | Stage 2 | `transform.stage2_resolve` | Entity Resolution — deterministic + fuzzy signals + state machine |
 | Stage 3 | `transform.stage3_synthesise` | Survivorship — build Golden Record from provenance |
 
-> Stage 0 **must** run before Stage 1. Materialization predicates (e.g. `priority_level = 2`) match against normalised, typed field values produced in Stage 0.
+> Stage 0 **must** run before Stage 1. The materialization gate resolves `cdm_entity_type` and sets the tier on the raw payload; Stage 1 normalise uses the already-resolved `cdm_entity_type` rather than re-deriving it.
 
 ## Running tests
 
@@ -85,8 +85,8 @@ make clean         # remove build artifacts
 ```
 nexus_spark_lib/
   transform/
-    stage0_normalise.py        # Stage 0 — normalisation
-    stage1_materialization.py  # Stage 1 — tier routing
+    stage0_materialization.py  # Stage 0 — materialization gate (resolves cdm_entity_type + tier)
+    stage1_normalise.py        # Stage 1 — normalisation (type coercion, FX, DQ, dedup)
     stage2_resolve/            # Stage 2 — entity resolution
     stage3_synthesise.py       # Stage 3 — golden record synthesis
   db/

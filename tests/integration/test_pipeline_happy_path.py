@@ -20,8 +20,8 @@ def test_full_pipeline_happy_path(
     mock_er_index_broadcast,
 ):
     """Smoke test: a single INSERT record flows through all 4 stages without error."""
-    from nexus_spark_lib.transform.stage0_normalise import normalise
-    from nexus_spark_lib.transform.stage1_materialization import materialization_decide
+    from nexus_spark_lib.transform.stage0_materialization import materialization_gate, drop_cold
+    from nexus_spark_lib.transform.stage1_normalise import normalise
     from nexus_spark_lib.transform.stage2_resolve import resolve
     from nexus_spark_lib.transform.stage3_synthesise import synthesise
 
@@ -41,11 +41,13 @@ def test_full_pipeline_happy_path(
         )
     ])
 
-    # Stage 0 — materialization decision
-    df = materialization_decide(df, mock_policy_broadcast)
+    # Stage 0 — materialization gate (runs FIRST; resolves cdm_entity_type + level)
+    df = materialization_gate(df, mock_cdm_mapping_broadcast, mock_policy_broadcast)
+    df = drop_cold(df)
+    assert "cdm_entity_type" in df.columns
     assert "materialization_level" in df.columns
 
-    # Stage 1 — normalise
+    # Stage 1 — normalise (cdm_entity_type already set by Stage 0)
     df = normalise(df, mock_cdm_mapping_broadcast, mock_fx_rates_broadcast)
     assert "normalised_json" in df.columns
 

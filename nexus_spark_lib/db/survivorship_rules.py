@@ -41,30 +41,38 @@ async def load_survivorship_rules(conn: asyncpg.Connection) -> SurvivorshipRuleS
 
 
 async def load_materialization_policy(conn: asyncpg.Connection) -> MaterializationPolicy:
-    """Load all active materialization policy rules from nexus_system.materialization_policy."""
+    """Load all active materialization policy rules from nexus_system.materialization_policy.
+
+    Active = valid_until IS NULL (always-on) OR valid_until > NOW() (not yet expired).
+    Expired rules are excluded so the broadcast stays small; the daily
+    materialization-recommend job purges them from the table.
+    """
     rows = await conn.fetch(
         """
-        SELECT rule_id, tenant_id, cdm_entity_type, predicate, target_level,
-               priority, rule_type, valid_from, valid_until
+        SELECT rule_id, tenant_id, scope, predicate, target_level,
+               priority, rule_type, valid_from, valid_until,
+               source, learned_metadata
         FROM nexus_system.materialization_policy
-        WHERE superseded_at IS NULL
-        ORDER BY tenant_id, cdm_entity_type, priority DESC
+        WHERE (valid_until IS NULL OR valid_until > NOW())
+        ORDER BY tenant_id, scope, priority DESC
         """
     )
     policy = MaterializationPolicy()
     for r in rows:
         rule = PolicyRule(
             rule_id=str(r["rule_id"]),
-            tenant_id=r["tenant_id"],
-            cdm_entity_type=r["cdm_entity_type"],
-            predicate=r["predicate"],
+            tenant_id=str(r["tenant_id"]),
+            scope=r["scope"],
+            predicate=r["predicate"] or "TRUE",
             target_level=MaterializationLevel(r["target_level"]),
-            priority=r["priority"],
+            priority=int(r["priority"]),
             rule_type=r["rule_type"],
             valid_from=r["valid_from"],
             valid_until=r["valid_until"],
+            source=r["source"] or "system",
+            learned_metadata=dict(r["learned_metadata"]) if r["learned_metadata"] else None,
         )
-        key = (r["tenant_id"], r["cdm_entity_type"])
+        key = (str(r["tenant_id"]), r["scope"])
         policy.rules_by_scope.setdefault(key, []).append(rule)
     logger.info("Loaded materialization policy: %d scopes", len(policy.rules_by_scope))
     return policy

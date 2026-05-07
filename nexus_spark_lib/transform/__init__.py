@@ -1,6 +1,17 @@
-from nexus_spark_lib.transform.stage0_normalise import normalise
-from nexus_spark_lib.transform.stage1_materialization import materialization_decide
+from nexus_spark_lib.transform.stage0_materialization import (
+    drop_cold,
+    materialization_gate,
+    materialization_decide,  # backward-compatible alias
+)
+from nexus_spark_lib.transform.stage1_normalise import normalise
 from nexus_spark_lib.transform.stage2_resolve import resolve
 from nexus_spark_lib.transform.stage3_synthesise import synthesise
 
-__all__ = ["normalise", "materialization_decide", "resolve", "synthesise"]
+__all__ = [
+    "materialization_gate",
+    "materialization_decide",
+    "drop_cold",
+    "normalise",
+    "resolve",
+    "synthesise",
+]

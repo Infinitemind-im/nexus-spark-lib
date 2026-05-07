@@ -123,11 +123,11 @@ def mock_policy_broadcast():
     rule = PolicyRule(
         rule_id="rule-001",
         tenant_id="tenant_acme",
-        cdm_entity_type="contact",
-        predicate="*",
+        scope="contact",
+        predicate="TRUE",
         target_level=MaterializationLevel.HOT,
         priority=100,
-        rule_type="manual_override",
+        rule_type="manual",
     )
     policy.rules_by_scope[("tenant_acme", "contact")] = [rule]
 
