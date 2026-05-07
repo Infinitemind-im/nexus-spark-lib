@@ -26,6 +26,32 @@ class MaterializationLevel(str, Enum):
     COLD = "cold"
 
 
+@dataclass
+class Stage0Output:
+    """Columns added to DataFrame by Stage 0 materialization_gate().
+
+    Per NEXUS-Iter2-REF-DataPaths §1.4–1.5, Stage 0 resolves the CDM entity type
+    from the connector_id × source_table broadcast and assigns a materialization tier
+    by evaluating the policy against raw payload field values.
+
+    These three columns are appended to the RawRecord DataFrame and passed to Stage 1.
+    """
+
+    cdm_entity_type: str
+    """Canonical CDM entity type (e.g. 'contact', 'account', 'incident').
+    Resolved from CDM mappings broadcast; used by all downstream stages for type-specific logic.
+    """
+
+    materialization_level: MaterializationLevel
+    """Tier assignment: HOT (fully stored) | WARM (ER + governance only) | COLD (dropped).
+    Assigned by policy evaluation; used by drop_cold() to prune stage."""
+
+    materialization_rule_id: str | None = None
+    """rule_id from nexus_system.materialization_policy that matched and fired.
+    None when falling back to WARM default (no explicit rule matched).
+    Used for audit + decision logging."""
+
+
 # Rule-type priority for tie-breaking (higher = wins): manual > boost > learned > decay > base
 _RULE_TYPE_RANK: dict[str, int] = {
     "manual": 5,

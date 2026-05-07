@@ -29,7 +29,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType, StructField, StructType
 
-from nexus_spark_lib.models.materialization import MaterializationLevel, MaterializationPolicy
+from nexus_spark_lib.models.materialization import MaterializationLevel, MaterializationPolicy, Stage0Output
 from nexus_spark_lib.observability.metrics import MATERIALIZATION_DECISIONS
 from nexus_spark_lib.observability.structured_log import get_stage_logger
 
@@ -64,10 +64,12 @@ def materialization_gate(
         policy_broadcast:     Broadcast[MaterializationPolicy].
 
     Returns:
-        DataFrame with three new columns added:
-        - cdm_entity_type       (str)        — canonical entity type
-        - materialization_level (str)        — "hot" | "warm" | "cold"
-        - materialization_rule_id (str|null) — rule_id that fired, None for default
+        DataFrame with three new columns added (per Stage0Output contract):
+        - cdm_entity_type       (str)        — canonical entity type from CDM mappings
+        - materialization_level (str)        — "hot" | "warm" | "cold" (from policy)
+        - materialization_rule_id (str|null) — rule_id that fired, None for WARM default
+
+        See: nexus_spark_lib.models.Stage0Output (public contract).
     """
 
     @F.udf(_GATE_SCHEMA)
@@ -160,26 +162,6 @@ def drop_cold(df: DataFrame) -> DataFrame:
     Must be called before passing the DataFrame to stage1_normalise.normalise().
     """
     return df.filter(F.col("materialization_level") != MaterializationLevel.COLD.value)
-
-
-from __future__ import annotations
-
-from pyspark.broadcast import Broadcast
-from pyspark.sql import DataFrame
-from pyspark.sql import functions as F
-from pyspark.sql.types import StringType, StructField, StructType
-
-from nexus_spark_lib.models.materialization import MaterializationLevel, MaterializationPolicy
-from nexus_spark_lib.observability.metrics import MATERIALIZATION_DECISIONS
-from nexus_spark_lib.observability.structured_log import get_stage_logger
-
-logger = get_stage_logger(__name__)
-
-
-_DECIDE_SCHEMA = StructType([
-    StructField("level", StringType(), False),
-    StructField("rule_id", StringType(), True),
-])
 
 
 def materialization_decide(

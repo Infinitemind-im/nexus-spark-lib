@@ -23,6 +23,7 @@ from nexus_spark_lib.models.materialization import (
     MaterializationPolicy,
     PolicyRule,
     PredicateContext,
+    Stage0Output,
 )
 from nexus_spark_lib.models.raw_record import RawRecord, SourceOp
 from nexus_spark_lib.models.survivorship import (
@@ -68,6 +69,7 @@ __all__ = [
     "MaterializationPolicy",
     "MaterializationDecision",
     "PredicateContext",
+    "Stage0Output",
     # survivorship
     "SurvivorshipRuleType",
     "SurvivorshipRule",
