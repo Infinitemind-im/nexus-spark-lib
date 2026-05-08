@@ -17,19 +17,17 @@ Breaking changes require a major version bump and a platform-wide coordination w
 
 __version__ = "0.1.0"
 
-from nexus_spark_lib.transform import (
+from nexus_spark_lib.transform.stage0_materialization import (
+    materialization_gate,
+    drop_cold,
     materialization_decide,
-    normalise,
-    resolve,
-    synthesise,
 )
-from nexus_spark_lib.kafka import write_transformed_records
+from nexus_spark_lib.transform.stage1_normalise import normalise
 
 __all__ = [
-    "normalise",
-    "resolve",
-    "synthesise",
+    "materialization_gate",
     "materialization_decide",
-    "write_transformed_records",
+    "drop_cold",
+    "normalise",
     "__version__",
 ]

@@ -122,7 +122,7 @@ def normalise(
         .drop("_row_num")
     )
 
-    NORMALISE_RECORDS.labels(status="ok").inc()
+    NORMALISE_RECORDS.labels(tenant_id="system", status="ok").inc()
     return enriched
 
 
@@ -145,6 +145,10 @@ def _normalise_row(
     blocking_rules_bc: Broadcast | None,
 ):
     """Return a closure for the normalise UDF. Captures broadcasts by closure."""
+    # Extract plain Python values BEFORE defining _fn to avoid pickling Broadcast objects.
+    _cdm_mapping_val = cdm_mapping_bc.value
+    _fx_rates_val = fx_rates_bc.value
+    _blocking_rules_val = blocking_rules_bc.value if blocking_rules_bc is not None else None
 
     def _fn(
         tenant_id: str,
@@ -157,8 +161,8 @@ def _normalise_row(
         after_payload: dict | None,
         before_payload: dict | None,
     ) -> tuple:
-        mapping = cdm_mapping_bc.value
-        fx_rates = fx_rates_bc.value
+        mapping = _cdm_mapping_val
+        fx_rates = _fx_rates_val
 
         # --- Business rule 1: CDM field-level mapping ---
         # cdm_entity_type is pre-resolved by Stage 0; only field map is needed here.
@@ -218,7 +222,7 @@ def _normalise_row(
         # Derived from entity_blocking_rules: concatenate configured CDM field values
         # to form the value fed into the blocking hash.
         blocking_key = _compute_blocking_key(
-            tenant_id, cdm_entity_type, normalised_fields, blocking_rules_bc
+            tenant_id, cdm_entity_type, normalised_fields, _blocking_rules_val
         )
 
         return (
@@ -292,7 +296,8 @@ def _compute_blocking_key(
     blocking_columns: list[str] = []
     if blocking_rules_bc is not None:
         try:
-            rules = blocking_rules_bc.value
+            # Accept either a plain value or a Broadcast (backward compat)
+            rules = blocking_rules_bc.value if hasattr(blocking_rules_bc, 'value') else blocking_rules_bc
             blocking_columns = rules.get((tenant_id, cdm_entity_type), [])
         except Exception:
             pass

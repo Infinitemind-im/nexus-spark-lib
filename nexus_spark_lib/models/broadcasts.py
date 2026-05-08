@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 # Type alias for CDM mapping broadcast payload
 # Key: (tenant_id, source_system, source_table, source_field) → CDM mapping info
 CdmMappingEntry = dict  # {"cdm_field": str, "cdm_entity": str, "tier": int, "canonical_type": str}
-CdmMappingIndex = dict[tuple[str, str, str, str], CdmMappingEntry]
+CdmMappingIndex = dict  # Type alias: Dict[tuple[str, str, str, str], CdmMappingEntry]
 
 
 @dataclass

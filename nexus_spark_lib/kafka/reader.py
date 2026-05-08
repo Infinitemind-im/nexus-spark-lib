@@ -76,7 +76,6 @@ def read_raw_records_stream(
         .option("startingOffsets", starting_offsets)
         .option("maxOffsetsPerTrigger", max_offsets_per_trigger)
         .option("kafka.group.id", ConsumerGroups.SPARK_TRANSFORMER)
-        .option("kafka.enable.auto.commit", "false")
         .option("failOnDataLoss", "false")
         .load()
     )

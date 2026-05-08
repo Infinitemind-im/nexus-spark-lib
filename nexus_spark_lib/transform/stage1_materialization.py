@@ -66,10 +66,12 @@ def materialization_decide(
         - materialization_rule_id (str | null: rule_id that matched, None for default fallback)
     """
 
+    # Extract plain Python value from Broadcast wrapper BEFORE defining the UDF.
+    _policy_val = policy_broadcast.value
+
     @F.udf(_DECIDE_SCHEMA)
     def _decide(tenant_id: str, cdm_entity_type: str, normalised_json: str):
         import json
-        policy: MaterializationPolicy = policy_broadcast.value
 
         # Parse normalised field values so predicates can match (e.g. priority_level=2).
         # normalised_json maps cdm_field → {"value": ..., "quality": ...}
@@ -85,16 +87,12 @@ def materialization_decide(
             except (ValueError, AttributeError):
                 pass  # malformed JSON → empty field_values → WARM fallback
 
-        decision = policy.evaluate(
+        decision = _policy_val.evaluate(
             tenant_id=tenant_id,
             cdm_entity_type=cdm_entity_type,
             field_values=field_values,
         )
-        MATERIALIZATION_DECISIONS.labels(
-            tenant_id=tenant_id,
-            cdm_entity_type=cdm_entity_type,
-            level=decision.level.value,
-        ).inc()
+        # Note: MATERIALIZATION_DECISIONS Prometheus counter not tracked here (not picklable).
         return (decision.level.value, decision.applied_rule_id)
 
     return (

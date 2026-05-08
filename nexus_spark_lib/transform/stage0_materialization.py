@@ -72,6 +72,12 @@ def materialization_gate(
         See: nexus_spark_lib.models.Stage0Output (public contract).
     """
 
+    # Extract plain Python values from Broadcast wrappers BEFORE defining the UDF.
+    # pyspark.Broadcast objects (and Prometheus counters) contain _thread.lock
+    # and are not picklable — cloudpickle serialises the entire UDF closure.
+    _cdm_mapping_val = cdm_mapping_broadcast.value
+    _policy_val = policy_broadcast.value
+
     @F.udf(_GATE_SCHEMA)
     def _gate(
         tenant_id: str,
@@ -84,9 +90,8 @@ def materialization_gate(
     ):
         # ── 1. Resolve cdm_entity_type from CDM mappings broadcast ──────────
         try:
-            mapping = cdm_mapping_broadcast.value
             cdm_entity_type = (
-                mapping.get_cdm_entity_type(connector_id, source_table) or "unknown"
+                _cdm_mapping_val.get_cdm_entity_type(connector_id, source_table) or "unknown"
             )
         except Exception:
             cdm_entity_type = "unknown"
@@ -112,18 +117,14 @@ def materialization_gate(
             field_values.setdefault("source_ts", str(source_ts))
 
         # ── 3. Evaluate materialization policy ───────────────────────────────
-        policy: MaterializationPolicy = policy_broadcast.value
-        decision = policy.evaluate(
+        decision = _policy_val.evaluate(
             tenant_id=tenant_id,
             cdm_entity_type=cdm_entity_type,
             field_values=field_values,
         )
 
-        MATERIALIZATION_DECISIONS.labels(
-            tenant_id=tenant_id,
-            cdm_entity_type=cdm_entity_type,
-            level=decision.level.value,
-        ).inc()
+        # Note: MATERIALIZATION_DECISIONS Prometheus counter is not tracked here
+        # (Prometheus counters are not picklable). Metrics are tracked post-UDF.
 
         return (cdm_entity_type, decision.level.value, decision.applied_rule_id)
 
@@ -184,13 +185,13 @@ def materialization_decide(
         - materialization_rule_id (str | null: rule_id that matched, None for default fallback)
     """
 
+    _policy_val = policy_broadcast.value
+
     @F.udf(_DECIDE_SCHEMA)
     def _decide(tenant_id: str, cdm_entity_type: str, normalised_json: str):
         import json
-        policy: MaterializationPolicy = policy_broadcast.value
 
         # Parse normalised field values so predicates can match (e.g. priority_level=2).
-        # normalised_json maps cdm_field → {"value": ..., "quality": ...}
         field_values: dict = {}
         if normalised_json:
             try:
@@ -203,16 +204,12 @@ def materialization_decide(
             except (ValueError, AttributeError):
                 pass  # malformed JSON → empty field_values → WARM fallback
 
-        decision = policy.evaluate(
+        decision = _policy_val.evaluate(
             tenant_id=tenant_id,
             cdm_entity_type=cdm_entity_type,
             field_values=field_values,
         )
-        MATERIALIZATION_DECISIONS.labels(
-            tenant_id=tenant_id,
-            cdm_entity_type=cdm_entity_type,
-            level=decision.level.value,
-        ).inc()
+        # Note: MATERIALIZATION_DECISIONS Prometheus counter not tracked here (not picklable).
         return (decision.level.value, decision.applied_rule_id)
 
     return (
