@@ -6,7 +6,7 @@ set by stage0_materialization.materialization_gate(). COLD records have been
 dropped by drop_cold().
 
 Pipeline order (per NEXUS-Iter2-REF-DataPaths §1.4–1.5):
-    reader.py → stage0_materialization → stage1_normalise → stage2_resolve → stage3_synthesise
+    reader.py → stage0_materialization → stage1_normalise
 
 Responsibilities (BUSINESS LOGIC ONLY):
   1. CDM field-level mapping via broadcast (connector_id × source_table → field map).
@@ -19,7 +19,7 @@ Responsibilities (BUSINESS LOGIC ONLY):
      field_meta (boolean, decimal, integer, string). Null-like strings ("null", "N/A", …) → None.
   7. Timestamp canonicalisation: any date/datetime/timestamp field is normalised to
      ISO 8601 UTC string (YYYY-MM-DDTHH:MM:SS+00:00) — business rule.
-  8. Blocking key computation from entity_blocking_rules (passed to Stage 2 Signal B).
+  8. Blocking key computation from entity_blocking_rules.
   9. Within-batch deduplication: for duplicate dedup_keys in the same micro-batch,
      keep only the record with the latest source_ts — business rule.
 
@@ -73,7 +73,7 @@ def normalise(
         fx_rates_broadcast:       Broadcast[FxRatesBroadcast] — historical FX rates.
         blocking_rules_broadcast: Optional Broadcast[dict] — entity_blocking_rules per
                                   (tenant_id, cdm_entity_type) → list[str] of CDM field
-                                  names used to form the LSH blocking key for Stage 2 ER.
+                                  names used to form the LSH blocking key.
                                   When None, blocking_key falls back to a type-level hash.
 
     Returns:
@@ -83,7 +83,7 @@ def normalise(
         - dq_score         (str)   — serialised float: mapped_fields / total_fields
         - dedup_key        (str)   — natural key: tenant_id|cdm_entity_type|source_record_id
         - blocking_key     (str)   — LSH bucket key derived from entity_blocking_rules;
-                                     consumed by Stage 2 Signal B probabilistic ER
+                                     LSH blocking key for downstream consumers
     """
     normalise_udf = F.udf(
         _normalise_row(cdm_mapping_broadcast, fx_rates_broadcast, blocking_rules_broadcast),
@@ -218,7 +218,7 @@ def _normalise_row(
 
         dedup_key = f"{tenant_id}|{cdm_entity_type}|{source_record_id}"
 
-        # --- Business rule: blocking key (for Stage 2 Signal B LSH) ---
+        # --- Business rule: blocking key (LSH) ---
         # Derived from entity_blocking_rules: concatenate configured CDM field values
         # to form the value fed into the blocking hash.
         blocking_key = _compute_blocking_key(
@@ -271,7 +271,7 @@ def _apply_fx_if_monetary(
 
 
 # ---------------------------------------------------------------------------
-# Blocking key computation (Stage 0 → Stage 2 handoff for Signal B)
+# Blocking key computation
 # ---------------------------------------------------------------------------
 
 def _compute_blocking_key(

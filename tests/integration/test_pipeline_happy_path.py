@@ -1,4 +1,4 @@
-"""Integration test — happy path through all 4 stages."""
+"""Integration test — happy path through stage 0 and stage 1."""
 
 from __future__ import annotations
 
@@ -16,14 +16,10 @@ def test_full_pipeline_happy_path(
     mock_cdm_mapping_broadcast,
     mock_fx_rates_broadcast,
     mock_policy_broadcast,
-    mock_survivorship_broadcast,
-    mock_er_index_broadcast,
 ):
-    """Smoke test: a single INSERT record flows through all 4 stages without error."""
+    """Smoke test: a single INSERT record flows through stage 0 and stage 1 without error."""
     from nexus_spark_lib.transform.stage0_materialization import materialization_gate, drop_cold
     from nexus_spark_lib.transform.stage1_normalise import normalise
-    from nexus_spark_lib.transform.stage2_resolve import resolve
-    from nexus_spark_lib.transform.stage3_synthesise import synthesise
 
     df = spark.createDataFrame([
         Row(
@@ -51,24 +47,9 @@ def test_full_pipeline_happy_path(
     df = normalise(df, mock_cdm_mapping_broadcast, mock_fx_rates_broadcast)
     assert "normalised_json" in df.columns
 
-    # Stage 2 — resolve
-    df = resolve(df, mock_er_index_broadcast)
-    assert "cdm_entity_id" in df.columns
-
-    # Stage 3 — synthesise
-    df = synthesise(df, mock_survivorship_broadcast)
-    assert "golden_fields_json" in df.columns
-    assert "provenance_hash" in df.columns
-
     rows = df.collect()
     assert len(rows) == 1
     row = rows[0]
-
-    # cdm_entity_id must be a stable "gr:" prefixed hash
-    assert row["cdm_entity_id"].startswith("gr:")
-
-    # provenance_hash must not be None
-    assert row["provenance_hash"] is not None
 
     # materialization level must be one of the valid values
     assert row["materialization_level"] in ("hot", "warm", "cold")

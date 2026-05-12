@@ -12,7 +12,7 @@ Runs BEFORE Stage 1 (normalise). Two responsibilities:
      comparisons, AGE checks on date strings).
 
 Pipeline order (per NEXUS-Iter2-REF-DataPaths §1.4–1.5):
-    reader.py → stage0_materialization → stage1_normalise → stage2_resolve → stage3_synthesise
+    reader.py → stage0_materialization → stage1_normalise
 
 Tier semantics (DataPaths §1.4):
     cold  → record dropped (call drop_cold() after this stage).
@@ -227,11 +227,11 @@ def drop_cold(df: DataFrame) -> DataFrame:
     """Remove COLD records from the pipeline after materialization_decide().
 
     Per NEXUS-Iter2-REF-DataPaths §1.4:
-      cold  → dropped immediately; no ER, no synthesis, no M3 writes.
-      warm  → Stage 0 normalise + Signal A ER only; no synthesis; no M3 writes.
-      hot   → full pipeline (Stages 1–3 + M3 projection).
+      cold  → dropped immediately.
+      warm  → Stage 1 normalise only; no M3 writes.
+      hot   → full pipeline (Stage 1 normalise + M3 projection).
 
     Must be called immediately after materialization_decide() and before
-    passing the DataFrame to stage2_resolve.resolve().
+    passing the DataFrame to stage1_normalise.normalise().
     """
     return df.filter(F.col("materialization_level") != MaterializationLevel.COLD.value)
