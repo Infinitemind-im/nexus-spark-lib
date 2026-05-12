@@ -31,9 +31,33 @@ def provenance_hash(canonical_summary: str) -> str:
     """Compute the provenance hash for a Golden Record.
 
     The canonical_summary is the deterministic string representation of the
-    golden_record_provenance rows (sorted by attribute_name, then source_system).
+    golden_record_provenance rows.
     """
     return "sha256:" + sha256_hex(canonical_summary)
+
+
+def provenance_hash_from_winning_records(
+    attribute_winners: dict[str, str],
+    attribute_value_hashes: dict[str, str] | None = None,
+) -> str:
+    """Compute a deterministic provenance hash from winner pointers.
+
+    The detailed library spec for Stage 3 uses the sorted tuple set
+    `(attribute_name, winning_record_id, value_hash)`.  Some broader docs
+    abbreviate this to `(attribute_name, winning_record_id)`, so the
+    `attribute_value_hashes` parameter is optional for callers that only need a
+    higher-level summary.
+    """
+    sorted_pairs = sorted(attribute_winners.items())
+    raw = "|".join(
+        (
+            f"{attribute_name}={winning_record_id}:{attribute_value_hashes[attribute_name]}"
+            if attribute_value_hashes is not None and attribute_name in attribute_value_hashes
+            else f"{attribute_name}={winning_record_id}"
+        )
+        for attribute_name, winning_record_id in sorted_pairs
+    )
+    return provenance_hash(raw)
 
 
 def blocking_key_hash(tenant_id: str, cdm_entity_type: str, blocking_value: str) -> str:

@@ -4,15 +4,77 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
+import sys
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-# Java 17 + Hadoop compatibility: must be set before PySpark launches its JVM subprocess.
-_JAVA17_OPENS = "--add-opens java.base/javax.security.auth=ALL-UNNAMED"
-os.environ.setdefault("JAVA_TOOL_OPTIONS", _JAVA17_OPENS)
-os.environ.setdefault("JDK_JAVA_OPTIONS", _JAVA17_OPENS)
+# Java 17 + Hadoop compatibility: only inject --add-opens when the active
+# java launcher supports it. Some local test environments still resolve to an
+# older JVM, and forcing these flags prevents Spark from starting at all.
+_JAVA17_OPENS = "--add-opens=java.base/javax.security.auth=ALL-UNNAMED"
+
+
+def _find_java_executable() -> str | None:
+    java_home = os.environ.get("JAVA_HOME")
+    if java_home:
+        candidate = Path(java_home) / "bin" / ("java.exe" if os.name == "nt" else "java")
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which("java")
+
+
+def _java_supports_add_opens() -> bool:
+    java_executable = _find_java_executable()
+    if not java_executable:
+        return False
+
+    try:
+        completed = subprocess.run(
+            [
+                java_executable,
+                _JAVA17_OPENS,
+                "-version",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    output = f"{completed.stdout}\n{completed.stderr}"
+    return completed.returncode == 0 and "Unrecognized option: --add-opens" not in output
+
+
+def _configure_java_test_options() -> None:
+    supports_add_opens = _java_supports_add_opens()
+    for key in ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS"):
+        current = os.environ.get(key)
+        if supports_add_opens:
+            if not current:
+                os.environ[key] = _JAVA17_OPENS
+        elif current and "--add-opens" in current:
+            os.environ.pop(key, None)
+
+
+_configure_java_test_options()
+os.environ["PYSPARK_PYTHON"] = sys.executable
+os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if os.name == "nt" and sys.version_info >= (3, 13):
+        raise pytest.UsageError(
+            "nexus-spark-lib tests must run with Python 3.11 on this Windows workspace. "
+            "Python 3.13 crashes local PySpark workers. Use "
+            "C:\\Program Files\\Python311\\python.exe."
+        )
 
 # ---------------------------------------------------------------------------
 # SparkSession — reused across the entire test session for speed
@@ -27,6 +89,8 @@ def spark():
         .appName("nexus-spark-lib-tests")
         .config("spark.sql.shuffle.partitions", "2")
         .config("spark.default.parallelism", "2")
+        .config("spark.pyspark.python", sys.executable)
+        .config("spark.pyspark.driver.python", sys.executable)
         .config("spark.ui.enabled", "false")
         .getOrCreate()
     )

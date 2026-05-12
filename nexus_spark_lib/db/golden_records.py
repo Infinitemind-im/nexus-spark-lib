@@ -1,7 +1,7 @@
 """CRUD for golden_records_index and golden_record_provenance.
 
 golden_records_index: one row per Golden Record (cdm_entity_id → state + metadata).
-golden_record_provenance: one row per (cdm_entity_id, attribute_name, source) triple.
+golden_record_provenance: one row per (cdm_entity_id, attribute_name) winner.
 
 All writes are idempotent. Survivorship is applied deterministically:
 given the same contributing sources, the same provenance rows result regardless
@@ -81,21 +81,27 @@ async def apply_synthesis_result(
         await conn.executemany(
             f"""
             INSERT INTO {_GRP}
-                (cdm_entity_id, tenant_id, attribute_name, source_system,
-                 source_record_id, source_value, source_ts, survivorship_rule, observed_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-            ON CONFLICT (cdm_entity_id, attribute_name, source_system, source_record_id)
+                (cdm_entity_id, tenant_id, attribute_name, winning_connector_id,
+                 winning_source_table, winning_record_id, observed_value_hash,
+                 observed_at, rule_applied)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (cdm_entity_id, attribute_name)
             DO UPDATE SET
-                source_value      = EXCLUDED.source_value,
-                source_ts         = EXCLUDED.source_ts,
-                survivorship_rule = EXCLUDED.survivorship_rule,
-                observed_at       = NOW()
+                winning_connector_id = EXCLUDED.winning_connector_id,
+                winning_source_table = EXCLUDED.winning_source_table,
+                winning_record_id    = EXCLUDED.winning_record_id,
+                observed_value_hash  = EXCLUDED.observed_value_hash,
+                observed_at          = EXCLUDED.observed_at,
+                rule_applied         = EXCLUDED.rule_applied
+            WHERE {_GRP}.observed_value_hash != EXCLUDED.observed_value_hash
+               OR {_GRP}.winning_record_id != EXCLUDED.winning_record_id
             """,
             [
                 (
                     r.cdm_entity_id, tenant_id, r.attribute_name,
-                    r.source_system, r.source_record_id, r.source_value,
-                    r.source_ts, r.survivorship_rule,
+                    r.winning_connector_id, r.winning_source_table,
+                    r.winning_record_id, r.observed_value_hash,
+                    r.observed_at, r.rule_applied,
                 )
                 for r in result.rows_to_upsert
             ],
@@ -125,25 +131,26 @@ async def get_all_provenance(
     """
     rows = await conn.fetch(
         f"""
-        SELECT cdm_entity_id, attribute_name, source_system, source_record_id,
-               source_value, source_ts, survivorship_rule, observed_at
+        SELECT cdm_entity_id, attribute_name, winning_connector_id,
+               winning_source_table, winning_record_id, observed_value_hash,
+               observed_at, rule_applied
         FROM {_GRP}
         WHERE cdm_entity_id = $1 AND tenant_id = $2
-        ORDER BY attribute_name, source_system
+        ORDER BY attribute_name, winning_connector_id
         """,
         cdm_entity_id, tenant_id,
     )
     return [
         ProvenanceRow(
             cdm_entity_id=r["cdm_entity_id"],
-            tenant_id=tenant_id,
             attribute_name=r["attribute_name"],
-            source_system=r["source_system"],
-            source_record_id=r["source_record_id"],
-            source_value=r["source_value"],
-            source_ts=str(r["source_ts"]),
-            survivorship_rule=r["survivorship_rule"],
+            winning_connector_id=r["winning_connector_id"],
+            winning_source_table=r["winning_source_table"],
+            winning_record_id=r["winning_record_id"],
+            observed_value_hash=r["observed_value_hash"],
             observed_at=str(r["observed_at"]),
+            rule_applied=r["rule_applied"],
+            tenant_id=tenant_id,
         )
         for r in rows
     ]
@@ -165,7 +172,7 @@ async def delete_provenance_for_source(
         f"""
         DELETE FROM {_GRP}
         WHERE cdm_entity_id = $1 AND tenant_id = $2
-          AND source_system = $3 AND source_record_id = $4
+                    AND winning_connector_id = $3 AND winning_record_id = $4
         RETURNING attribute_name
         """,
         cdm_entity_id, tenant_id, source_system, source_record_id,

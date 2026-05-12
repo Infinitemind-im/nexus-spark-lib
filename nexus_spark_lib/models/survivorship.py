@@ -15,12 +15,18 @@ from enum import Enum
 class SurvivorshipRuleType(str, Enum):
     """Strategy used to select the winning value for an attribute."""
 
-    MOST_RECENT = "most_recent"              # Source with the latest source_ts wins
-    HIGHEST_CONFIDENCE = "highest_confidence"  # Source with the highest mapping confidence
-    SOURCE_PRIORITY = "source_priority"      # Explicit list of preferred sources
-    MOST_COMPLETE = "most_complete"          # Source with the fewest null attributes wins
-    LONGEST_VALUE = "longest_value"          # Longest non-null string value wins
-    EXACT_MATCH = "exact_match"              # All sources must agree; else flag for review
+    MOST_RECENT = "most_recent"                  # Source with the latest source_ts wins
+    MOST_CONFIDENT = "most_confident"            # Spec name: source with the highest ER confidence wins
+    HIGHEST_CONFIDENCE = "most_confident"        # Backward-compatible alias for older code/tests
+    SOURCE_PRIORITY = "source_priority"          # Explicit list of preferred sources
+    MOST_COMPLETE = "most_complete"              # Source with the fewest null attributes wins
+    FIRST_OBSERVED = "first_observed"            # Once chosen, keep the original source
+    MANUAL = "manual"                            # Steward-managed override; pipeline must not replace it
+
+    # Legacy extensions retained for compatibility with the current simplified
+    # row-level Stage 3 implementation and its tests.
+    LONGEST_VALUE = "longest_value"
+    EXACT_MATCH = "exact_match"
 
 
 @dataclass
@@ -72,17 +78,41 @@ class SurvivorshipRuleSet:
 
 @dataclass
 class ProvenanceRow:
-    """One row of golden_record_provenance — one attribute from one source."""
+    """One row of golden_record_provenance — one winning source per attribute.
+
+    The Iteration 2 contract stores only source pointers plus a hash of the
+    winning value. Raw business values do not belong in provenance.
+    """
 
     cdm_entity_id: str
-    tenant_id: str
     attribute_name: str
-    source_system: str
-    source_record_id: str
-    source_value: str | None           # Serialised canonical value (None = source contributes null)
-    source_ts: str                     # ISO 8601 timestamp from the contributing record
-    survivorship_rule: str             # Rule type that selected this source
-    observed_at: str                   # When this provenance row was last written
+    winning_connector_id: str
+    winning_source_table: str
+    winning_record_id: str
+    observed_value_hash: str
+    observed_at: str
+    rule_applied: str
+    tenant_id: str | None = None
+
+    @property
+    def source_system(self) -> str:
+        """Backward-compatible alias for older call sites."""
+        return self.winning_connector_id
+
+    @property
+    def source_record_id(self) -> str:
+        """Backward-compatible alias for older call sites."""
+        return self.winning_record_id
+
+    @property
+    def source_ts(self) -> str:
+        """Backward-compatible alias for older call sites."""
+        return self.observed_at
+
+    @property
+    def survivorship_rule(self) -> str:
+        """Backward-compatible alias for older call sites."""
+        return self.rule_applied
 
 
 @dataclass
@@ -93,5 +123,6 @@ class SynthesisResult:
     rows_to_upsert: list[ProvenanceRow] = field(default_factory=list)
     rows_to_delete: list[tuple[str, str, str]] = field(default_factory=list)  # (entity_id, attr, source)
     provenance_hash: str = ""
+    hash_changed: bool = False
     contributing_sources: list[str] = field(default_factory=list)
     attribute_provenance: dict[str, str] = field(default_factory=dict)
