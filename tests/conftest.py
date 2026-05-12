@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -211,12 +212,18 @@ def mock_survivorship_broadcast():
 
 @pytest.fixture
 def mock_er_index_broadcast():
-    er_index = MagicMock()
-    er_index.snapshot = {}
-    er_index.deterministic_columns = {}
-    er_index.lsh_index = None
-    er_index.thresholds = {}
+    @dataclass
+    class _FakeErIndex:
+        snapshot: dict = field(default_factory=dict)
+        deterministic_columns: dict = field(default_factory=dict)
+        lsh_index: object | None = None
+        thresholds: dict = field(default_factory=dict)
 
-    bc = MagicMock()
-    bc.value = er_index
-    return bc
+        def get_fields(self, cdm_entity_id):
+            return {}
+
+    @dataclass
+    class _FakeBroadcast:
+        value: object
+
+    return _FakeBroadcast(value=_FakeErIndex())

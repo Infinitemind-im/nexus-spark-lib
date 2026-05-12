@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from pyspark.sql import Row
+from pyspark.sql.types import MapType, StringType, StructField, StructType, TimestampType
 
 
 @pytest.mark.integration
@@ -25,21 +26,37 @@ def test_full_pipeline_happy_path(
     from nexus_spark_lib.transform.stage2_resolve import resolve
     from nexus_spark_lib.transform.stage3_synthesise import synthesise
 
-    df = spark.createDataFrame([
-        Row(
-            tenant_id="tenant_acme",
-            connector_id="conn_salesforce",
-            source_table="Contact",
-            source_record_id="003abc",
-            source_op="INSERT",
-            source_ts=datetime(2024, 3, 1, 12, 0, 0),
-            after_payload={"full_name": "Alice Smith", "email": "alice@acme.com"},
-            before_payload=None,
-            message_id="msg-001",
-            backfill_batch_id=None,
-            trace_id="trace-001",
-        )
+    schema = StructType([
+        StructField("tenant_id", StringType(), False),
+        StructField("connector_id", StringType(), False),
+        StructField("source_system", StringType(), False),
+        StructField("source_table", StringType(), False),
+        StructField("source_record_id", StringType(), False),
+        StructField("source_op", StringType(), False),
+        StructField("source_ts", TimestampType(), False),
+        StructField("after_payload", MapType(StringType(), StringType()), False),
+        StructField("before_payload", MapType(StringType(), StringType()), True),
+        StructField("message_id", StringType(), False),
+        StructField("backfill_batch_id", StringType(), True),
+        StructField("trace_id", StringType(), True),
     ])
+
+    df = spark.createDataFrame([
+        (
+            "tenant_acme",
+            "conn_salesforce",
+            "salesforce",
+            "Contact",
+            "003abc",
+            "INSERT",
+            datetime(2024, 3, 1, 12, 0, 0),
+            {"full_name": "Alice Smith", "email": "alice@acme.com"},
+            None,
+            "msg-001",
+            "batch-001",
+            "trace-001",
+        )
+    ], schema=schema)
 
     # Stage 0 — materialization gate (runs FIRST; resolves cdm_entity_type + level)
     df = materialization_gate(df, mock_cdm_mapping_broadcast, mock_policy_broadcast)
