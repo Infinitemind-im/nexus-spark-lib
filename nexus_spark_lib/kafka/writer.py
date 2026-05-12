@@ -16,6 +16,7 @@ import json
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.streaming import StreamingQuery
+from pyspark.sql.types import StringType
 
 from nexus_spark_lib.config.constants import Topics
 from nexus_spark_lib.config.settings import settings
