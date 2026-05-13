@@ -37,6 +37,8 @@ logger = get_stage_logger(__name__)
 
 _NEO4J_EXECUTOR_DRIVER: Any | None = None
 _NEO4J_EXECUTOR_DRIVER_KEY: tuple[str, str, str, int, float] | None = None
+_DEFAULT_AUTO_APPLY_THRESHOLD = 0.92
+_DEFAULT_REVIEW_LOWER_BOUND = 0.75
 
 
 def resolve(
@@ -226,8 +228,9 @@ def resolve(
 
         final_score = (score_b or 0.0) + score_c_lift
 
-        auto_apply = 0.95
-        review_lower = 0.70
+        threshold_config = _get_threshold_config(er_index, tenant_id, cdm_entity_type)
+        auto_apply = threshold_config["auto_apply_threshold"]
+        review_lower = threshold_config["review_lower_bound"]
 
         if final_score >= auto_apply and candidate_b:
             resolved_method = (
@@ -367,6 +370,26 @@ def _get_similarity_weights(er_index: Any, tenant_id: str, cdm_entity_type: str)
     if isinstance(weights, dict) and weights:
         return weights
     return dict(_DEFAULT_WEIGHTS)
+
+
+def _get_threshold_config(er_index: Any, tenant_id: str, cdm_entity_type: str) -> dict[str, float]:
+    try:
+        config = er_index.thresholds.get((tenant_id, cdm_entity_type), {})
+    except Exception:
+        config = {}
+
+    auto_apply = _safe_float(config.get("auto_apply_threshold"))
+    review_lower = _safe_float(config.get("review_lower_bound"))
+
+    if auto_apply <= 0.0:
+        auto_apply = _DEFAULT_AUTO_APPLY_THRESHOLD
+    if review_lower <= 0.0:
+        review_lower = _DEFAULT_REVIEW_LOWER_BOUND
+
+    return {
+        "auto_apply_threshold": auto_apply,
+        "review_lower_bound": review_lower,
+    }
 
 
 def _matches_any_attribute(attribute_name: str, configured_attributes: list[str]) -> bool:
