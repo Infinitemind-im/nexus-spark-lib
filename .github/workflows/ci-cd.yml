@@ -84,7 +84,7 @@ jobs:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           TWINE_REPOSITORY_URL: https://pypi.pkg.github.com/Infinitemind-im
-        run: twine upload --skip-existing dist/*
+        run: twine upload dist/*
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
