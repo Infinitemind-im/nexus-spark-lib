@@ -6,11 +6,14 @@ from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
+from pyspark.sql.types import MapType, StringType, StructField, StructType, TimestampType
 
 from nexus_spark_lib.models.materialization import (
+    MaterializationAssignment,
     MaterializationDecision,
     MaterializationLevel,
     MaterializationPolicy,
+    MaterializationRuntimeConfig,
     PolicyRule,
 )
 
@@ -94,29 +97,186 @@ class TestMaterializationPolicy:
         assert decision.applied_rule_id == "high"
 
 
+class TestMaterializationRuntimeConfig:
+    def test_assignment_takes_precedence_over_policy(self):
+        policy = MaterializationPolicy()
+        policy.rules_by_scope[("t1", "contact")] = [
+            PolicyRule(
+                rule_id="hot-policy",
+                tenant_id="t1",
+                scope="contact",
+                predicate="TRUE",
+                target_level=MaterializationLevel.HOT,
+                priority=100,
+                rule_type="manual",
+            )
+        ]
+        config = MaterializationRuntimeConfig(
+            assignments={
+                ("t1", "contact"): MaterializationAssignment(
+                    tenant_id="t1",
+                    cdm_entity_type="contact",
+                    level=MaterializationLevel.COLD,
+                    assigned_by="md",
+                )
+            },
+            policy=policy,
+        )
+
+        decision = config.evaluate("t1", "contact")
+
+        assert decision.level == MaterializationLevel.COLD
+        assert decision.applied_rule_id == "cdm_entity_materialization:t1:contact"
+
+    def test_assignment_runtime_falls_back_to_policy_when_unassigned(self):
+        policy = MaterializationPolicy()
+        policy.rules_by_scope[("t1", "contact")] = [
+            PolicyRule(
+                rule_id="warm-policy",
+                tenant_id="t1",
+                scope="contact",
+                predicate="TRUE",
+                target_level=MaterializationLevel.WARM,
+                priority=100,
+                rule_type="base",
+            )
+        ]
+        config = MaterializationRuntimeConfig(policy=policy)
+
+        decision = config.evaluate("t1", "contact")
+
+        assert decision.level == MaterializationLevel.WARM
+        assert decision.applied_rule_id == "warm-policy"
+
+
 class TestStage0Integration:
     def test_materialisation_gate_adds_columns(self, spark, mock_cdm_mapping_broadcast, mock_policy_broadcast):
-        from pyspark.sql import Row
-
         from nexus_spark_lib.transform.stage0_materialization import materialization_gate
 
-        df = spark.createDataFrame([
-            Row(
-                tenant_id="tenant_acme",
-                connector_id="conn_salesforce",
-                source_table="Contact",
-                source_record_id="r1",
-                source_op="INSERT",
-                after_payload={"full_name": "Alice"},
-                before_payload=None,
-            )
+        schema = StructType([
+            StructField("tenant_id", StringType(), False),
+            StructField("connector_id", StringType(), False),
+            StructField("source_table", StringType(), False),
+            StructField("source_record_id", StringType(), False),
+            StructField("source_op", StringType(), False),
+            StructField("source_ts", TimestampType(), True),
+            StructField("after_payload", MapType(StringType(), StringType()), True),
+            StructField("before_payload", MapType(StringType(), StringType()), True),
         ])
+
+        df = spark.createDataFrame(
+            [(
+                "tenant_acme",
+                "conn_salesforce",
+                "Contact",
+                "r1",
+                "INSERT",
+                datetime(2024, 3, 1),
+                {"full_name": "Alice"},
+                None,
+            )],
+            schema=schema,
+        )
         result = materialization_gate(df, mock_cdm_mapping_broadcast, mock_policy_broadcast)
         cols = result.columns
         assert "cdm_entity_type" in cols
         assert "materialization_level" in cols
         assert "materialization_rule_id" in cols
         row = result.collect()[0]
+        assert row["cdm_entity_type"] == "contact"
+        assert row["materialization_level"] == "hot"
+
+    def test_materialisation_gate_accepts_md_assignment_runtime_config(self, spark, mock_cdm_mapping_broadcast):
+        from nexus_spark_lib.transform.stage0_materialization import materialization_gate
+
+        runtime_config = MaterializationRuntimeConfig(
+            assignments={
+                ("tenant_acme", "contact"): MaterializationAssignment(
+                    tenant_id="tenant_acme",
+                    cdm_entity_type="contact",
+                    level=MaterializationLevel.HOT,
+                    assigned_by="md",
+                )
+            }
+        )
+        broadcast = MagicMock()
+        broadcast.value = runtime_config
+
+        schema = StructType([
+            StructField("tenant_id", StringType(), False),
+            StructField("connector_id", StringType(), False),
+            StructField("source_table", StringType(), False),
+            StructField("source_record_id", StringType(), False),
+            StructField("source_op", StringType(), False),
+            StructField("source_ts", TimestampType(), True),
+            StructField("after_payload", MapType(StringType(), StringType()), True),
+            StructField("before_payload", MapType(StringType(), StringType()), True),
+        ])
+
+        df = spark.createDataFrame(
+            [(
+                "tenant_acme",
+                "conn_salesforce",
+                "Contact",
+                "r1",
+                "INSERT",
+                datetime(2024, 3, 1),
+                {"full_name": "Alice"},
+                None,
+            )],
+            schema=schema,
+        )
+
+        result = materialization_gate(df, mock_cdm_mapping_broadcast, broadcast)
+        row = result.collect()[0]
+
+        assert row["materialization_level"] == "hot"
+        assert row["materialization_rule_id"] == "cdm_entity_materialization:tenant_acme:contact"
+
+    def test_materialisation_gate_falls_back_to_source_system(self, spark, mock_policy_broadcast):
+        from nexus_spark_lib.transform.stage0_materialization import materialization_gate
+
+        mapping = MagicMock()
+
+        def _get_cdm_entity_type(lookup_key, source_table):
+            if lookup_key == "salesforce" and source_table == "Contact":
+                return "contact"
+            return "unknown"
+
+        mapping.get_cdm_entity_type.side_effect = _get_cdm_entity_type
+        broadcast = MagicMock()
+        broadcast.value = mapping
+
+        schema = StructType([
+            StructField("tenant_id", StringType(), False),
+            StructField("connector_id", StringType(), False),
+            StructField("source_system", StringType(), True),
+            StructField("source_table", StringType(), False),
+            StructField("source_record_id", StringType(), False),
+            StructField("source_op", StringType(), False),
+            StructField("source_ts", TimestampType(), True),
+            StructField("after_payload", MapType(StringType(), StringType()), True),
+            StructField("before_payload", MapType(StringType(), StringType()), True),
+        ])
+
+        df = spark.createDataFrame(
+            [(
+                "tenant_acme",
+                "salesforce-prod",
+                "salesforce",
+                "Contact",
+                "r1",
+                "INSERT",
+                datetime(2024, 3, 1),
+                {"full_name": "Alice"},
+                None,
+            )],
+            schema=schema,
+        )
+
+        result = materialization_gate(df, broadcast, mock_policy_broadcast)
+        row = result.collect()[0]
+
         assert row["cdm_entity_type"] == "contact"
         assert row["materialization_level"] == "hot"
 

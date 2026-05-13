@@ -7,14 +7,14 @@ broadcast type to each stage function.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pyspark import Broadcast
 
     from nexus_spark_lib.models.fx import FxRates
-    from nexus_spark_lib.models.materialization import MaterializationPolicy
+    from nexus_spark_lib.models.materialization import MaterializationPolicy, MaterializationRuntimeConfig
     from nexus_spark_lib.models.survivorship import SurvivorshipRuleSet
 
 # Type alias for CDM mapping broadcast payload
@@ -51,16 +51,28 @@ class FxRatesBroadcast:
 
 @dataclass
 class ErIndexSnapshot:
-    """Snapshot of entity_resolution_index for batch broadcast (Batch Backfill mode).
+    """Serializable ER snapshot shared by streaming and batch resolution paths.
 
-    In streaming mode (CDC), entity lookups hit PostgreSQL directly for low latency.
-    In batch mode (Backfill), the full index is loaded into a broadcast for throughput.
-
-    Key: (tenant_id, connector_id, source_table, source_record_id) → cdm_entity_id
+    `snapshot` contains fast-path source lookups plus deterministic Signal A hashes.
+    `deterministic_columns` and `thresholds` carry the additional metadata needed
+    by the current shared-library Stage 2 implementation.
     """
 
-    index: dict[tuple[str, str, str, str], str]  # → cdm_entity_id
-    snapshot_ts: str
+    snapshot: dict[str, str] = field(default_factory=dict)
+    deterministic_columns: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+    thresholds: dict[tuple[str, str], dict] = field(default_factory=dict)
+    snapshot_ts: str = ""
+    deterministic_hash_count: int = 0
+    lsh_index: object | None = None
+    _fields_by_entity: dict[str, dict] = field(default_factory=dict, repr=False)
+
+    @property
+    def index(self) -> dict[str, str]:
+        """Backward-compatible alias for older batch-oriented callers."""
+        return self.snapshot
+
+    def get_fields(self, cdm_entity_id: str) -> dict:
+        return self._fields_by_entity.get(cdm_entity_id, {})
 
 
 @dataclass
@@ -87,10 +99,15 @@ class SurvivorshipBroadcast:
 
 @dataclass
 class MaterializationPolicyBroadcast:
-    """Typed wrapper for the materialization policy broadcast (Stage 0)."""
+    """Typed wrapper for the Stage 0 materialization broadcast.
 
-    broadcast: "Broadcast[MaterializationPolicy]"
+    The payload may be the legacy MaterializationPolicy or the MD-aligned
+    MaterializationRuntimeConfig that prefers cdm_entity_materialization and
+    falls back to policy evaluation.
+    """
+
+    broadcast: "Broadcast[MaterializationPolicy | MaterializationRuntimeConfig]"
     snapshot_ts: str
 
-    def value(self) -> "MaterializationPolicy":
+    def value(self) -> "MaterializationPolicy | MaterializationRuntimeConfig":
         return self.broadcast.value

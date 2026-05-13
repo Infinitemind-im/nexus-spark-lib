@@ -7,31 +7,48 @@ explicit column — not re-resolved from CDM mappings.
 
 from __future__ import annotations
 
+import json
+from unittest.mock import MagicMock
+
 import pytest
+from pyspark.sql.types import MapType, StringType, StructField, StructType, TimestampType
 
 
 class TestStage1NormaliseIntegration:
     def test_normalise_adds_columns(self, spark, mock_cdm_mapping_broadcast, mock_fx_rates_broadcast):
-        from pyspark.sql import Row
         from datetime import datetime
 
         from nexus_spark_lib.transform.stage1_normalise import normalise
 
         # cdm_entity_type is pre-set by Stage 0 (materialization gate)
-        df = spark.createDataFrame([
-            Row(
-                tenant_id="tenant_acme",
-                connector_id="conn_salesforce",
-                source_table="Contact",
-                cdm_entity_type="contact",          # pre-set by Stage 0
-                materialization_level="hot",         # pre-set by Stage 0
-                source_record_id="003abc",
-                source_op="INSERT",
-                source_ts=datetime(2024, 3, 1),
-                after_payload={"full_name": "Alice Smith", "email": "alice@acme.com"},
-                before_payload=None,
-            )
+        schema = StructType([
+            StructField("tenant_id", StringType(), False),
+            StructField("connector_id", StringType(), False),
+            StructField("source_table", StringType(), False),
+            StructField("cdm_entity_type", StringType(), False),
+            StructField("materialization_level", StringType(), False),
+            StructField("source_record_id", StringType(), False),
+            StructField("source_op", StringType(), False),
+            StructField("source_ts", TimestampType(), True),
+            StructField("after_payload", MapType(StringType(), StringType()), True),
+            StructField("before_payload", MapType(StringType(), StringType()), True),
         ])
+
+        df = spark.createDataFrame(
+            [(
+                "tenant_acme",
+                "conn_salesforce",
+                "Contact",
+                "contact",
+                "hot",
+                "003abc",
+                "INSERT",
+                datetime(2024, 3, 1),
+                {"full_name": "Alice Smith", "email": "alice@acme.com"},
+                None,
+            )],
+            schema=schema,
+        )
         result = normalise(df, mock_cdm_mapping_broadcast, mock_fx_rates_broadcast)
         cols = result.columns
         # cdm_entity_type already in df (from Stage 0) — Stage 1 does NOT add it
@@ -39,8 +56,108 @@ class TestStage1NormaliseIntegration:
         assert "normalised_json" in cols
         assert "dq_score" in cols
         assert "blocking_key" in cols
+        assert "changed_canonical_attributes_json" in cols
         row = result.collect()[0]
         assert row["cdm_entity_type"] == "contact"
         # blocking_key should be a non-empty hash string
         assert row["blocking_key"] is not None
         assert row["blocking_key"].startswith("gr:")
+        assert json.loads(row["changed_canonical_attributes_json"]) == []
+
+    def test_normalise_emits_changed_canonical_attributes_for_update(self, spark, mock_cdm_mapping_broadcast, mock_fx_rates_broadcast):
+        from datetime import datetime
+
+        from nexus_spark_lib.transform.stage1_normalise import normalise
+
+        schema = StructType([
+            StructField("tenant_id", StringType(), False),
+            StructField("connector_id", StringType(), False),
+            StructField("source_table", StringType(), False),
+            StructField("cdm_entity_type", StringType(), False),
+            StructField("materialization_level", StringType(), False),
+            StructField("source_record_id", StringType(), False),
+            StructField("source_op", StringType(), False),
+            StructField("source_ts", TimestampType(), True),
+            StructField("after_payload", MapType(StringType(), StringType()), True),
+            StructField("before_payload", MapType(StringType(), StringType()), True),
+        ])
+
+        df = spark.createDataFrame(
+            [(
+                "tenant_acme",
+                "conn_salesforce",
+                "Contact",
+                "contact",
+                "hot",
+                "003abc",
+                "UPDATE",
+                datetime(2024, 3, 1),
+                {"full_name": "Alice Smith", "email": "alice.new@acme.com"},
+                {"full_name": "Alice Smith", "email": "alice@acme.com"},
+            )],
+            schema=schema,
+        )
+
+        result = normalise(df, mock_cdm_mapping_broadcast, mock_fx_rates_broadcast)
+        row = result.collect()[0]
+
+        assert json.loads(row["changed_canonical_attributes_json"]) == ["email"]
+
+    def test_normalise_falls_back_to_source_system_mapping(self, spark, mock_fx_rates_broadcast):
+        from datetime import datetime
+
+        from nexus_spark_lib.transform.stage1_normalise import normalise
+
+        mapping = MagicMock()
+
+        def _get_field_map(lookup_key, source_table):
+            if lookup_key == "salesforce" and source_table == "Contact":
+                return {
+                    "full_name": "full_name",
+                    "email": "email",
+                    "__meta__full_name": {"type": "string"},
+                    "__meta__email": {"type": "string"},
+                }
+            return {}
+
+        mapping.get_field_map.side_effect = _get_field_map
+        broadcast = MagicMock()
+        broadcast.value = mapping
+
+        schema = StructType([
+            StructField("tenant_id", StringType(), False),
+            StructField("connector_id", StringType(), False),
+            StructField("source_system", StringType(), True),
+            StructField("source_table", StringType(), False),
+            StructField("cdm_entity_type", StringType(), False),
+            StructField("materialization_level", StringType(), False),
+            StructField("source_record_id", StringType(), False),
+            StructField("source_op", StringType(), False),
+            StructField("source_ts", TimestampType(), True),
+            StructField("after_payload", MapType(StringType(), StringType()), True),
+            StructField("before_payload", MapType(StringType(), StringType()), True),
+        ])
+
+        df = spark.createDataFrame(
+            [(
+                "tenant_acme",
+                "salesforce-prod",
+                "salesforce",
+                "Contact",
+                "contact",
+                "hot",
+                "003abc",
+                "INSERT",
+                datetime(2024, 3, 1),
+                {"full_name": "Alice Smith", "email": "alice@acme.com"},
+                None,
+            )],
+            schema=schema,
+        )
+
+        result = normalise(df, broadcast, mock_fx_rates_broadcast)
+        row = result.collect()[0]
+        normalised = json.loads(row["normalised_json"])
+
+        assert normalised["full_name"]["value"] == "Alice Smith"
+        assert normalised["email"]["value"] == "alice@acme.com"

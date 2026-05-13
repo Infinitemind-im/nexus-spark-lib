@@ -18,9 +18,11 @@ from nexus_spark_lib.models.er_types import (
 )
 from nexus_spark_lib.models.fx import FxConversionResult, FxRateEntry, FxRates
 from nexus_spark_lib.models.materialization import (
+    MaterializationAssignment,
     MaterializationDecision,
     MaterializationLevel,
     MaterializationPolicy,
+    MaterializationRuntimeConfig,
     PolicyRule,
     PredicateContext,
     Stage0Output,
@@ -67,6 +69,8 @@ __all__ = [
     "MaterializationLevel",
     "PolicyRule",
     "MaterializationPolicy",
+    "MaterializationAssignment",
+    "MaterializationRuntimeConfig",
     "MaterializationDecision",
     "PredicateContext",
     "Stage0Output",

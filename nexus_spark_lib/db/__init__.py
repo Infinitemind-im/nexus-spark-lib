@@ -4,6 +4,7 @@ from nexus_spark_lib.db.decision_log import upsert_schema_snapshot, write_decisi
 from nexus_spark_lib.db.er_index import (
     delete_by_source,
     get_sources_for_entity,
+    load_er_index_snapshot,
     lookup_batch,
     repoint_to_survivor,
     upsert_batch,
@@ -21,6 +22,7 @@ from nexus_spark_lib.db.survivorship_rules import (
     load_deterministic_id_columns,
     load_er_thresholds,
     load_materialization_policy,
+    load_materialization_runtime_config,
     load_survivorship_rules,
 )
 
@@ -32,6 +34,7 @@ __all__ = [
     "SYSTEM_TENANT",
     # er_index
     "lookup_batch",
+    "load_er_index_snapshot",
     "upsert_batch",
     "delete_by_source",
     "get_sources_for_entity",
@@ -50,6 +53,7 @@ __all__ = [
     # policy loaders
     "load_survivorship_rules",
     "load_materialization_policy",
+    "load_materialization_runtime_config",
     "load_er_thresholds",
     "load_deterministic_id_columns",
     # decision log + schema snapshots

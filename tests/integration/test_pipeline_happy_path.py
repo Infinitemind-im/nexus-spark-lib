@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from pyspark.sql import Row
 from pyspark.sql.types import MapType, StringType, StructField, StructType, TimestampType
+
+from nexus_spark_lib._internal.hash_utils import er_source_lookup_key
+from nexus_spark_lib.transform.stage2_resolve.id_generator import generate_cdm_entity_id
 
 
 @pytest.mark.integration
@@ -71,6 +75,9 @@ def test_full_pipeline_happy_path(
     # Stage 2 — resolve
     df = resolve(df, mock_er_index_broadcast)
     assert "cdm_entity_id" in df.columns
+    assert "er_resolution_method" in df.columns
+    assert "er_confidence" in df.columns
+    assert "is_provisional" in df.columns
 
     # Stage 3 — synthesise
     df = synthesise(df, mock_survivorship_broadcast)
@@ -84,3 +91,164 @@ def test_full_pipeline_happy_path(
 
     # materialization level must be one of the valid values
     assert row["materialization_level"] in ("hot", "warm", "cold")
+    assert row["er_resolution_method"] == "new_entity"
+    assert row["er_confidence"] == pytest.approx(1.0)
+    assert row["is_provisional"] is False
+
+
+def test_update_relevant_diff_bypasses_fast_path(
+    spark,
+    mock_cdm_mapping_broadcast,
+    mock_fx_rates_broadcast,
+    mock_er_index_broadcast,
+):
+    from nexus_spark_lib.transform.stage1_normalise import normalise
+    from nexus_spark_lib.transform.stage2_resolve import resolve
+
+    schema = StructType([
+        StructField("tenant_id", StringType(), False),
+        StructField("connector_id", StringType(), False),
+        StructField("source_system", StringType(), False),
+        StructField("source_table", StringType(), False),
+        StructField("source_record_id", StringType(), False),
+        StructField("source_op", StringType(), False),
+        StructField("source_ts", TimestampType(), False),
+        StructField("after_payload", MapType(StringType(), StringType()), False),
+        StructField("before_payload", MapType(StringType(), StringType()), True),
+        StructField("cdm_entity_type", StringType(), False),
+        StructField("materialization_level", StringType(), False),
+    ])
+
+    df = spark.createDataFrame([
+        (
+            "tenant_acme",
+            "conn_salesforce",
+            "salesforce",
+            "Contact",
+            "003abc",
+            "UPDATE",
+            datetime(2024, 3, 1, 12, 0, 0),
+            {"full_name": "Alice Smith", "email": "alice.new@acme.com"},
+            {"full_name": "Alice Smith", "email": "alice@acme.com"},
+            "contact",
+            "hot",
+        )
+    ], schema=schema)
+
+    mock_er_index_broadcast.value.snapshot = {
+        er_source_lookup_key("tenant_acme", "conn_salesforce", "Contact", "003abc"): "gr:existing-001",
+    }
+    mock_er_index_broadcast.value.thresholds = {
+        ("tenant_acme", "contact"): {"weights": {"email": 0.30}},
+    }
+
+    df = normalise(df, mock_cdm_mapping_broadcast, mock_fx_rates_broadcast)
+    row = df.collect()[0]
+    assert json.loads(row["changed_canonical_attributes_json"]) == ["email"]
+
+    df = resolve(df, mock_er_index_broadcast)
+    resolved = df.collect()[0]
+
+    assert resolved["er_resolution_method"] == "new_entity"
+    assert resolved["cdm_entity_id"] != "gr:existing-001"
+
+
+def test_update_non_er_diff_keeps_fast_path(
+    spark,
+    mock_cdm_mapping_broadcast,
+    mock_fx_rates_broadcast,
+    mock_er_index_broadcast,
+):
+    from nexus_spark_lib.transform.stage1_normalise import normalise
+    from nexus_spark_lib.transform.stage2_resolve import resolve
+
+    schema = StructType([
+        StructField("tenant_id", StringType(), False),
+        StructField("connector_id", StringType(), False),
+        StructField("source_system", StringType(), False),
+        StructField("source_table", StringType(), False),
+        StructField("source_record_id", StringType(), False),
+        StructField("source_op", StringType(), False),
+        StructField("source_ts", TimestampType(), False),
+        StructField("after_payload", MapType(StringType(), StringType()), False),
+        StructField("before_payload", MapType(StringType(), StringType()), True),
+        StructField("cdm_entity_type", StringType(), False),
+        StructField("materialization_level", StringType(), False),
+    ])
+
+    df = spark.createDataFrame([
+        (
+            "tenant_acme",
+            "conn_salesforce",
+            "salesforce",
+            "Contact",
+            "003abc",
+            "UPDATE",
+            datetime(2024, 3, 1, 12, 0, 0),
+            {"full_name": "Alice Newname", "email": "alice@acme.com"},
+            {"full_name": "Alice Smith", "email": "alice@acme.com"},
+            "contact",
+            "hot",
+        )
+    ], schema=schema)
+
+    mock_er_index_broadcast.value.snapshot = {
+        er_source_lookup_key("tenant_acme", "conn_salesforce", "Contact", "003abc"): "gr:existing-001",
+    }
+    mock_er_index_broadcast.value.thresholds = {
+        ("tenant_acme", "contact"): {"weights": {"email": 0.30}},
+    }
+
+    df = normalise(df, mock_cdm_mapping_broadcast, mock_fx_rates_broadcast)
+    row = df.collect()[0]
+    assert json.loads(row["changed_canonical_attributes_json"]) == ["full_name"]
+
+    df = resolve(df, mock_er_index_broadcast)
+    resolved = df.collect()[0]
+
+    assert resolved["er_resolution_method"] == "fast_path"
+    assert resolved["cdm_entity_id"] == "gr:existing-001"
+
+
+def test_new_entity_uses_stage1_blocking_key(
+    spark,
+    mock_er_index_broadcast,
+):
+    from nexus_spark_lib.transform.stage2_resolve import resolve
+
+    schema = StructType([
+        StructField("tenant_id", StringType(), False),
+        StructField("connector_id", StringType(), False),
+        StructField("source_system", StringType(), False),
+        StructField("source_table", StringType(), False),
+        StructField("source_record_id", StringType(), False),
+        StructField("source_op", StringType(), False),
+        StructField("normalised_json", StringType(), False),
+        StructField("changed_canonical_attributes_json", StringType(), False),
+        StructField("materialization_level", StringType(), False),
+        StructField("cdm_entity_type", StringType(), False),
+        StructField("blocking_key", StringType(), False),
+    ])
+
+    blocking_key = "gr:blocking-key-001"
+    df = spark.createDataFrame([
+        (
+            "tenant_acme",
+            "conn_salesforce",
+            "salesforce",
+            "Contact",
+            "003abc",
+            "INSERT",
+            json.dumps({"email": {"value": "alice@acme.com"}}),
+            "[]",
+            "hot",
+            "contact",
+            blocking_key,
+        )
+    ], schema=schema)
+
+    result = resolve(df, mock_er_index_broadcast)
+    row = result.collect()[0]
+
+    assert row["er_resolution_method"] == "new_entity"
+    assert row["cdm_entity_id"] == generate_cdm_entity_id("tenant_acme", "contact", blocking_key)

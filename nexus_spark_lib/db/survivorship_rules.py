@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import asyncpg
 
-from nexus_spark_lib.models.materialization import MaterializationLevel, MaterializationPolicy, PolicyRule
+from nexus_spark_lib.models.materialization import (
+    MaterializationAssignment,
+    MaterializationLevel,
+    MaterializationPolicy,
+    MaterializationRuntimeConfig,
+    PolicyRule,
+)
 from nexus_spark_lib.models.survivorship import SurvivorshipRule, SurvivorshipRuleSet, SurvivorshipRuleType
 from nexus_spark_lib.observability.structured_log import get_stage_logger
 
@@ -78,6 +84,52 @@ async def load_materialization_policy(conn: asyncpg.Connection) -> Materializati
     return policy
 
 
+async def load_materialization_runtime_config(conn: asyncpg.Connection) -> MaterializationRuntimeConfig:
+    """Load Stage 0 runtime config with MD assignment-table precedence.
+
+    When cdm_entity_materialization is populated, those assignments are used as
+    the authoritative Stage 0 decision source. materialization_policy remains a
+    backward-compatible fallback for environments that have not migrated yet.
+    """
+
+    assignments: dict[tuple[str, str], MaterializationAssignment] = {}
+    try:
+        assignment_rows = await conn.fetch(
+            """
+            SELECT tenant_id,
+                   cdm_entity_type,
+                   materialization_level,
+                   assigned_by,
+                   updated_at
+            FROM nexus_system.cdm_entity_materialization
+            """
+        )
+    except asyncpg.UndefinedTableError:
+        assignment_rows = []
+
+    for row in assignment_rows:
+        key = (str(row["tenant_id"]), str(row["cdm_entity_type"]))
+        assignments[key] = MaterializationAssignment(
+            tenant_id=str(row["tenant_id"]),
+            cdm_entity_type=str(row["cdm_entity_type"]),
+            level=MaterializationLevel(str(row["materialization_level"])),
+            assigned_by=str(row["assigned_by"] or "default"),
+            updated_at=row["updated_at"],
+        )
+
+    try:
+        policy = await load_materialization_policy(conn)
+    except asyncpg.UndefinedTableError:
+        policy = None
+
+    logger.info(
+        "Loaded materialization runtime config: %d assignments, %d policy scopes",
+        len(assignments),
+        len(policy.rules_by_scope) if policy is not None else 0,
+    )
+    return MaterializationRuntimeConfig(assignments=assignments, policy=policy)
+
+
 async def load_er_thresholds(conn: asyncpg.Connection, tenant_id: str) -> dict:
     """Load ER thresholds for a tenant from nexus_system.er_thresholds."""
     rows = await conn.fetch(
@@ -105,6 +157,6 @@ async def load_deterministic_id_columns(conn: asyncpg.Connection) -> dict[tuple[
     )
     result: dict[tuple[str, str], list[str]] = {}
     for r in rows:
-        key = (r["tenant_id"], r["cdm_entity_type"])
+        key = (str(r["tenant_id"]), r["cdm_entity_type"])
         result.setdefault(key, []).append(r["attribute_name"])
     return result

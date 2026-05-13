@@ -3,8 +3,10 @@
 FIRST stage in the pipeline (per NEXUS-Iter2-REF-DataPaths §1.4, SystemOrch §3).
 
 Runs BEFORE Stage 1 (normalise). Two responsibilities:
-  1. Resolve cdm_entity_type from connector_id × source_table using the CDM
-     mappings broadcast. This is a lightweight lookup — no type coercion.
+    1. Resolve cdm_entity_type from connector_id × source_table using the CDM
+         mappings broadcast. If the live connector_id differs from the canonical
+         source_system stored in cdm_mappings, source_system is used as a fallback
+         lookup key. This is a lightweight lookup — no type coercion.
   2. Evaluate the materialization policy against raw payload field values to
      assign hot / warm / cold. Predicates are evaluated against the raw
      after_payload (DELETE → before_payload) values. String coercion is
@@ -57,10 +59,13 @@ def materialization_gate(
 
     Args:
         df:                   Raw-record DataFrame from kafka/reader.py.
-                              Required columns: tenant_id, connector_id, source_table,
-                              source_op, source_ts, after_payload, before_payload.
+                      Required columns: tenant_id, connector_id, source_table,
+                      source_op, source_ts, after_payload, before_payload.
+                      source_system is used as a fallback lookup key when
+                      present on the DataFrame.
         cdm_mapping_broadcast: Broadcast[CdmMappingBroadcast] — resolves
-                               (connector_id, source_table) → cdm_entity_type.
+                       (connector_id or source_system, source_table)
+                       → cdm_entity_type.
         policy_broadcast:     Broadcast[MaterializationPolicy].
 
     Returns:
@@ -82,6 +87,7 @@ def materialization_gate(
     def _gate(
         tenant_id: str,
         connector_id: str,
+        source_system: str | None,
         source_table: str,
         source_op: str,
         source_ts,
@@ -89,12 +95,16 @@ def materialization_gate(
         before_payload,
     ):
         # ── 1. Resolve cdm_entity_type from CDM mappings broadcast ──────────
-        try:
-            cdm_entity_type = (
-                _cdm_mapping_val.get_cdm_entity_type(connector_id, source_table) or "unknown"
-            )
-        except Exception:
-            cdm_entity_type = "unknown"
+        cdm_entity_type = "unknown"
+        for lookup_key in (connector_id, source_system):
+            if not lookup_key:
+                continue
+            try:
+                cdm_entity_type = _cdm_mapping_val.get_cdm_entity_type(lookup_key, source_table) or "unknown"
+            except Exception:
+                continue
+            if cdm_entity_type != "unknown":
+                break
 
         # ── 2. Extract raw field values for predicate evaluation ─────────────
         # DELETE uses before_payload; all other ops use after_payload.
@@ -128,12 +138,15 @@ def materialization_gate(
 
         return (cdm_entity_type, decision.level.value, decision.applied_rule_id)
 
+    source_system_col = F.col("source_system") if "source_system" in df.columns else F.lit(None)
+
     return (
         df.withColumn(
             "_gate",
             _gate(
                 F.col("tenant_id"),
                 F.col("connector_id"),
+                source_system_col,
                 F.col("source_table"),
                 F.col("source_op"),
                 F.col("source_ts"),
