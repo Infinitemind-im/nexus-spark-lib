@@ -32,15 +32,20 @@ async def propagate_insert(
     cdm_entity_id: str,
     cdm_entity_type: str,
     connector_id: str,
+    source_system: str,
     source_table: str,
     source_record_id: str,
     blocking_key: str,
     confidence: float = 1.0,
     provisional: bool = False,
+    resolution_method: str = ResolutionMethod.DETERMINISTIC.value,
 ) -> ErOperation:
     """Handle INSERT / SNAPSHOT_READ / RELEVEL — create or update ER index entry."""
     sm = GoldenRecordStateMachine(conn, tenant_id)
-    await sm.create_or_activate(cdm_entity_id, cdm_entity_type, reason="insert")
+    if provisional:
+        await sm.provisional(cdm_entity_id, cdm_entity_type)
+    else:
+        await sm.create_or_activate(cdm_entity_id, cdm_entity_type, reason="insert")
 
     await upsert_batch(
         conn,
@@ -48,11 +53,13 @@ async def propagate_insert(
             (
                 tenant_id,
                 connector_id,
+                source_system,
                 source_table,
                 source_record_id,
                 cdm_entity_id,
+                cdm_entity_type,
                 confidence,
-                ResolutionMethod.DETERMINISTIC.value,
+                resolution_method,
                 provisional,
             )
         ],

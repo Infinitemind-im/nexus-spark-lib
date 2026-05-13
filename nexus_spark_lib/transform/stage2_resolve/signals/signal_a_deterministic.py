@@ -10,6 +10,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from nexus_spark_lib._internal.hash_utils import (
+    deterministic_value_hash,
+    er_deterministic_lookup_key,
+)
 from nexus_spark_lib.observability.structured_log import get_stage_logger
 
 logger = get_stage_logger(__name__)
@@ -40,11 +44,19 @@ def run_signal_a(
         if not value:
             continue
 
-        lookup_key = f"{tenant_id}|{cdm_entity_type}|{col}:{value}"
-        cdm_entity_id = er_index.snapshot.get(lookup_key)
-        if cdm_entity_id:
-            logger.debug("Signal A match: %s=%s → %s", col, value, cdm_entity_id)
-            return cdm_entity_id
+        hashed_lookup_key = er_deterministic_lookup_key(
+            tenant_id,
+            cdm_entity_type,
+            col,
+            deterministic_value_hash(value),
+        )
+        legacy_lookup_key = f"{tenant_id}|{cdm_entity_type}|{col}:{value}"
+
+        for lookup_key in (hashed_lookup_key, legacy_lookup_key):
+            cdm_entity_id = er_index.snapshot.get(lookup_key)
+            if cdm_entity_id:
+                logger.debug("Signal A match: %s=%s → %s", col, value, cdm_entity_id)
+                return cdm_entity_id
 
     return None
 

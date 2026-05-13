@@ -22,7 +22,7 @@ from pyspark.sql import SparkSession
 from nexus_core.db import SYSTEM_TENANT, get_tenant_scoped_connection
 from nexus_spark_lib.config.settings import settings
 from nexus_spark_lib.db.survivorship_rules import (
-    load_materialization_policy,
+    load_materialization_runtime_config,
     load_survivorship_rules,
 )
 from nexus_spark_lib.errors.exceptions import BroadcastExpiredError, BroadcastRefreshError
@@ -96,8 +96,8 @@ class BroadcastManager:
     async def _refresh_policy(self) -> None:
         try:
             async with get_tenant_scoped_connection(self._db_pool, SYSTEM_TENANT) as conn:
-                policy = await load_materialization_policy(conn)
-            bc = self._spark.sparkContext.broadcast(policy)
+                runtime_config = await load_materialization_runtime_config(conn)
+            bc = self._spark.sparkContext.broadcast(runtime_config)
             if self._policy_bc:
                 self._policy_bc.broadcast.unpersist()
             self._policy_bc = MaterializationPolicyBroadcast(
@@ -105,7 +105,7 @@ class BroadcastManager:
                 snapshot_ts=datetime.utcnow().isoformat(),
             )
             self._policy_loaded_at = datetime.utcnow()
-            logger.info("MaterializationPolicy broadcast refreshed")
+            logger.info("Stage 0 materialization broadcast refreshed")
         except Exception as exc:
             raise BroadcastRefreshError(f"Failed to refresh policy broadcast: {exc}") from exc
 

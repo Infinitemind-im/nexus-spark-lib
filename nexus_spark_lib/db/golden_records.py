@@ -10,6 +10,8 @@ of processing order (NFR-D3-05).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import asyncpg
 
 from nexus_spark_lib.models.er_types import GoldenRecordState
@@ -21,6 +23,26 @@ logger = get_stage_logger(__name__)
 
 _GRI = "nexus_system.golden_records_index"
 _GRP = "nexus_system.golden_record_provenance"
+
+
+def _coerce_observed_at(value: object) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+    if isinstance(value, str):
+        raw_value = value.strip()
+        if not raw_value:
+            raise ValueError("observed_at must not be empty")
+        parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    raise TypeError(
+        f"observed_at must be a datetime or ISO-8601 string, got {type(value)!r}"
+    )
 
 
 async def upsert_golden_record(
@@ -101,7 +123,7 @@ async def apply_synthesis_result(
                     r.cdm_entity_id, tenant_id, r.attribute_name,
                     r.winning_connector_id, r.winning_source_table,
                     r.winning_record_id, r.observed_value_hash,
-                    r.observed_at, r.rule_applied,
+                    _coerce_observed_at(r.observed_at), r.rule_applied,
                 )
                 for r in result.rows_to_upsert
             ],

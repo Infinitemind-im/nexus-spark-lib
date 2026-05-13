@@ -173,6 +173,72 @@ class MaterializationPolicy:
         )
 
 
+@dataclass
+class MaterializationAssignment:
+    """Direct per-entity materialization assignment from cdm_entity_materialization.
+
+    This is the MD-authoritative Stage 0 source when present. It bypasses
+    predicate evaluation entirely and assigns the configured level for the
+    (tenant_id, cdm_entity_type) pair.
+    """
+
+    tenant_id: str
+    cdm_entity_type: str
+    level: MaterializationLevel
+    assigned_by: str = "default"
+    updated_at: datetime | None = None
+
+
+@dataclass
+class MaterializationRuntimeConfig:
+    """Stage 0 runtime view that prefers MD assignments and falls back to policy.
+
+    `cdm_entity_materialization` is authoritative for Iteration 2 MD alignment.
+    `materialization_policy` remains as a backward-compatible fallback so the
+    existing Spark tests and local environments continue to work during the
+    migration period.
+    """
+
+    assignments: dict[tuple[str, str], MaterializationAssignment] = field(default_factory=dict)
+    policy: MaterializationPolicy | None = None
+    snapshot_ts: datetime = field(default_factory=datetime.utcnow)
+
+    def _get_assignment(self, tenant_id: str, cdm_entity_type: str) -> MaterializationAssignment | None:
+        return self.assignments.get((tenant_id, cdm_entity_type)) or self.assignments.get((tenant_id, "*"))
+
+    def evaluate(
+        self,
+        tenant_id: str,
+        cdm_entity_type: str,
+        field_values: dict[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> "MaterializationDecision":
+        eval_now = now or datetime.utcnow()
+        assignment = self._get_assignment(tenant_id, cdm_entity_type)
+        if assignment is not None:
+            return MaterializationDecision(
+                level=assignment.level,
+                applied_rule_id=f"cdm_entity_materialization:{tenant_id}:{assignment.cdm_entity_type}",
+                evaluated_at=eval_now,
+                predicate_debug=f"assignment:{assignment.assigned_by}",
+            )
+
+        if self.policy is not None:
+            return self.policy.evaluate(
+                tenant_id=tenant_id,
+                cdm_entity_type=cdm_entity_type,
+                field_values=field_values,
+                now=eval_now,
+            )
+
+        return MaterializationDecision(
+            level=MaterializationLevel.WARM,
+            applied_rule_id=None,
+            evaluated_at=eval_now,
+            predicate_debug="default:warm",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Predicate evaluator
 # ---------------------------------------------------------------------------
@@ -345,6 +411,7 @@ def _split_top_level(expr: str, keyword: str) -> list[str]:
     """Split expr on keyword that is not inside parentheses or single-quoted strings."""
     depth = 0
     in_quote = False
+    between_pending = False
     parts: list[str] = []
     start = 0
     kw = f" {keyword.upper()} "
@@ -361,7 +428,13 @@ def _split_top_level(expr: str, keyword: str) -> list[str]:
                 depth += 1
             elif c == ")":
                 depth -= 1
+            elif depth == 0 and expr[i: i + len(" BETWEEN ")].upper() == " BETWEEN ":
+                between_pending = True
             elif depth == 0 and expr[i: i + kw_len].upper() == kw:
+                if keyword.upper() == "AND" and between_pending:
+                    between_pending = False
+                    i += kw_len - 1
+                    continue
                 parts.append(expr[start:i].strip())
                 start = i + kw_len
                 i += kw_len - 1

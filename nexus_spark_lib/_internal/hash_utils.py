@@ -60,6 +60,51 @@ def provenance_hash_from_winning_records(
     return provenance_hash(raw)
 
 
+def deterministic_value_hash(value: object) -> str:
+    """Hash a deterministic identifier value for Signal A lookups.
+
+    Signal A only needs exact-match semantics. Using the same SHA-256 hash
+    convention as golden_record_provenance lets the ER loader build lookup keys
+    from PostgreSQL without storing raw business values in memory snapshots.
+    """
+    return sha256_hex(str(value))
+
+
+def er_source_lookup_key(
+    tenant_id: str,
+    connector_id: str,
+    source_table: str,
+    source_record_id: str,
+) -> str:
+    """Build the canonical Stage 2 fast-path lookup key."""
+    return (
+        "src:"
+        f"{tenant_id}\x00{connector_id}\x00{source_table}\x00{source_record_id}"
+    )
+
+
+def er_legacy_source_lookup_key(
+    tenant_id: str,
+    source_system: str,
+    source_record_id: str,
+) -> str:
+    """Backward-compatible Stage 2 fast-path key used by older tests/snapshots."""
+    return f"legacy_src:{tenant_id}\x00{source_system}\x00{source_record_id}"
+
+
+def er_deterministic_lookup_key(
+    tenant_id: str,
+    cdm_entity_type: str,
+    attribute_name: str,
+    observed_value_hash: str,
+) -> str:
+    """Build the canonical Signal A lookup key from a deterministic value hash."""
+    return (
+        "det:"
+        f"{tenant_id}\x00{cdm_entity_type}\x00{attribute_name}\x00{observed_value_hash}"
+    )
+
+
 def blocking_key_hash(tenant_id: str, cdm_entity_type: str, blocking_value: str) -> str:
     """Generate a stable cdm_entity_id from the blocking key components.
 

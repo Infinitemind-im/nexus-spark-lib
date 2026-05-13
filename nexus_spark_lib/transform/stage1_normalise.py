@@ -9,8 +9,9 @@ Pipeline order (per NEXUS-Iter2-REF-DataPaths §1.4–1.5):
     reader.py → stage0_materialization → stage1_normalise
 
 Responsibilities (BUSINESS LOGIC ONLY):
-  1. CDM field-level mapping via broadcast (connector_id × source_table → field map).
-     cdm_entity_type is already set by Stage 0 — NOT re-resolved here.
+    1. CDM field-level mapping via broadcast ((connector_id or source_system) ×
+         source_table → field map). cdm_entity_type is already set by Stage 0 —
+         NOT re-resolved here.
   2. CRUD routing: DELETE → before_payload, INSERT/UPDATE/SNAPSHOT_READ/RELEVEL → after_payload
   3. FX currency conversion at source_ts rate (NOT the processing-time rate) — business rule
   4. DQ scoring: proportion of mapped fields / total fields in payload — business rule
@@ -65,11 +66,14 @@ def normalise(
 
     Args:
         df:                       DataFrame from Stage 0 (warm + hot records only).
-                                  Required columns: tenant_id, connector_id, source_table,
-                                  source_record_id, source_op, source_ts, after_payload,
-                                  before_payload, cdm_entity_type (from Stage 0).
+                      Required columns: tenant_id, connector_id, source_table,
+                      source_record_id, source_op, source_ts, after_payload,
+                      before_payload, cdm_entity_type (from Stage 0).
+                      source_system is used as a fallback lookup key when
+                      present on the DataFrame.
         cdm_mapping_broadcast:    Broadcast[CdmMappingBroadcast] — field-level maps per
-                                  connector (source_field → cdm_attr + type metadata).
+                      connector or source_system (source_field → cdm_attr +
+                      type metadata).
         fx_rates_broadcast:       Broadcast[FxRatesBroadcast] — historical FX rates.
         blocking_rules_broadcast: Optional Broadcast[dict] — entity_blocking_rules per
                                   (tenant_id, cdm_entity_type) → list[str] of CDM field
@@ -84,17 +88,22 @@ def normalise(
         - dedup_key        (str)   — natural key: tenant_id|cdm_entity_type|source_record_id
         - blocking_key     (str)   — LSH bucket key derived from entity_blocking_rules;
                                      LSH blocking key for downstream consumers
+        - changed_canonical_attributes_json (str) — JSON array of canonical attributes
+                                     whose normalised values changed on UPDATE
     """
     normalise_udf = F.udf(
         _normalise_row(cdm_mapping_broadcast, fx_rates_broadcast, blocking_rules_broadcast),
         _NORMALISE_OUTPUT_SCHEMA,
     )
 
+    source_system_col = F.col("source_system") if "source_system" in df.columns else F.lit(None)
+
     enriched = df.withColumn(
         "_norm",
         normalise_udf(
             F.col("tenant_id"),
             F.col("connector_id"),
+            source_system_col,
             F.col("source_table"),
             F.col("cdm_entity_type"),   # already set by Stage 0 — do not re-resolve
             F.col("source_record_id"),
@@ -110,6 +119,7 @@ def normalise(
         F.col("_norm.dq_score").alias("dq_score"),
         F.col("_norm.dedup_key").alias("dedup_key"),
         F.col("_norm.blocking_key").alias("blocking_key"),
+        F.col("_norm.changed_canonical_attributes_json").alias("changed_canonical_attributes_json"),
     ).drop("_norm")
 
     # --- Business rule 8: Within-batch deduplication ---
@@ -136,6 +146,7 @@ _NORMALISE_OUTPUT_SCHEMA = StructType([
     StructField("dq_score", StringType(), True),
     StructField("dedup_key", StringType(), True),
     StructField("blocking_key", StringType(), True),
+    StructField("changed_canonical_attributes_json", StringType(), True),
 ])
 
 
@@ -153,6 +164,7 @@ def _normalise_row(
     def _fn(
         tenant_id: str,
         connector_id: str,
+        source_system: str | None,
         source_table: str,
         cdm_entity_type: str,     # already resolved by Stage 0 materialization gate
         source_record_id: str,
@@ -166,48 +178,55 @@ def _normalise_row(
 
         # --- Business rule 1: CDM field-level mapping ---
         # cdm_entity_type is pre-resolved by Stage 0; only field map is needed here.
-        field_map = _resolve_field_map(mapping, connector_id, source_table)
+        field_map = _resolve_field_map(mapping, connector_id, source_system, source_table)
+
+        def _normalise_payload(payload: dict[str, Any]) -> tuple[dict[str, dict], dict[str, Any]]:
+            normalised_fields: dict[str, dict] = {}
+            source_extras: dict[str, Any] = {}
+
+            for raw_key, raw_value in payload.items():
+                cdm_attr = field_map.get(raw_key)
+                field_meta = field_map.get(f"__meta__{raw_key}", {})
+
+                if cdm_attr is None:
+                    source_extras[raw_key] = strip_null_like(raw_value)
+                    continue
+
+                coerced = coerce_value(raw_value, field_meta)
+                value, quality = _apply_fx_if_monetary(
+                    raw_value=coerced,
+                    field_meta=field_meta,
+                    source_ts=source_ts,
+                    fx_rates=fx_rates,
+                    tenant_id=tenant_id,
+                )
+
+                normalised_fields[cdm_attr] = {
+                    "value": value,
+                    "quality": quality.value,
+                    "source_attribute": raw_key,
+                    "pii_flag": bool(field_meta.get("pii", False)),
+                }
+
+            return normalised_fields, source_extras
 
         # --- Business rule 2: CRUD routing ---
         # DELETE uses before_payload (the row as it existed before deletion).
         # All other ops (INSERT, UPDATE, SNAPSHOT_READ, RELEVEL) use after_payload.
         op = source_op or "INSERT"
-        payload: dict[str, Any] = {}
+        payload: dict[str, Any]
+        changed_canonical_attributes: list[str] = []
         if op == "DELETE":
             payload = dict(before_payload or {})
+            normalised_fields, source_extras = _normalise_payload(payload)
+        elif op == "UPDATE":
+            before_fields, _ = _normalise_payload(dict(before_payload or {}))
+            payload = dict(after_payload or {})
+            normalised_fields, source_extras = _normalise_payload(payload)
+            changed_canonical_attributes = _compute_changed_canonical_attributes(before_fields, normalised_fields)
         else:
             payload = dict(after_payload or {})
-
-        normalised_fields: dict[str, dict] = {}
-        source_extras: dict[str, Any] = {}
-
-        for raw_key, raw_value in payload.items():
-            cdm_attr = field_map.get(raw_key)
-            field_meta = field_map.get(f"__meta__{raw_key}", {})
-
-            if cdm_attr is None:
-                # No CDM mapping — apply basic null normalisation then preserve in source_extras
-                source_extras[raw_key] = strip_null_like(raw_value)
-                continue
-
-            # --- Business rule 6 & 7: Type coercion + timestamp canonicalisation ---
-            coerced = coerce_value(raw_value, field_meta)
-
-            # --- Business rule 3: FX conversion at source_ts ---
-            value, quality = _apply_fx_if_monetary(
-                raw_value=coerced,
-                field_meta=field_meta,
-                source_ts=source_ts,
-                fx_rates=fx_rates,
-                tenant_id=tenant_id,
-            )
-
-            normalised_fields[cdm_attr] = {
-                "value": value,
-                "quality": quality.value,
-                "source_attribute": raw_key,
-                "pii_flag": bool(field_meta.get("pii", False)),
-            }
+            normalised_fields, source_extras = _normalise_payload(payload)
 
         # --- Business rule 4: DQ score ---
         # Proportion of payload fields that have a CDM mapping.
@@ -231,6 +250,7 @@ def _normalise_row(
             str(dq_score),
             dedup_key,
             blocking_key,
+            json.dumps(changed_canonical_attributes, default=str),
         )
 
     return _fn
@@ -316,22 +336,63 @@ def _compute_blocking_key(
     return blocking_key_hash(tenant_id, cdm_entity_type, blocking_value)
 
 
+def _compute_changed_canonical_attributes(
+    before_fields: dict[str, Any],
+    after_fields: dict[str, Any],
+) -> list[str]:
+    changed: list[str] = []
+    for attr_name in sorted(set(before_fields) | set(after_fields)):
+        before_value = _extract_normalised_value(before_fields.get(attr_name))
+        after_value = _extract_normalised_value(after_fields.get(attr_name))
+        if before_value != after_value:
+            changed.append(attr_name)
+    return changed
+
+
+def _extract_normalised_value(field: Any) -> Any:
+    if isinstance(field, dict):
+        return field.get("value")
+    return field
+
+
 # ---------------------------------------------------------------------------
 # CDM mapping resolution helpers (read from broadcast — no I/O)
 # ---------------------------------------------------------------------------
 
-def _resolve_cdm_type(mapping: Any, connector_id: str, source_table: str) -> str:
-    try:
-        return mapping.get_cdm_entity_type(connector_id, source_table) or "unknown"
-    except Exception:
-        return "unknown"
+def _resolve_cdm_type(
+    mapping: Any,
+    connector_id: str | None,
+    source_system: str | None,
+    source_table: str,
+) -> str:
+    for lookup_key in (connector_id, source_system):
+        if not lookup_key:
+            continue
+        try:
+            cdm_entity_type = mapping.get_cdm_entity_type(lookup_key, source_table) or "unknown"
+        except Exception:
+            continue
+        if cdm_entity_type != "unknown":
+            return cdm_entity_type
+    return "unknown"
 
 
-def _resolve_field_map(mapping: Any, connector_id: str, source_table: str) -> dict:
-    try:
-        return mapping.get_field_map(connector_id, source_table) or {}
-    except Exception:
-        return {}
+def _resolve_field_map(
+    mapping: Any,
+    connector_id: str | None,
+    source_system: str | None,
+    source_table: str,
+) -> dict:
+    for lookup_key in (connector_id, source_system):
+        if not lookup_key:
+            continue
+        try:
+            field_map = mapping.get_field_map(lookup_key, source_table) or {}
+        except Exception:
+            continue
+        if field_map:
+            return field_map
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +494,10 @@ def coerce_value(raw_value: Any, field_meta: dict) -> Any:
     - date/datetime/timestamp: delegate to canonicalise_timestamp().
     - string (default): strip whitespace; null-like → None.
     """
+    if raw_value is None:
+        return None
+
+    raw_value = strip_null_like(raw_value)
     if raw_value is None:
         return None
 
