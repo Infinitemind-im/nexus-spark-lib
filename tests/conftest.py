@@ -218,9 +218,15 @@ def mock_er_index_broadcast():
         deterministic_columns: dict = field(default_factory=dict)
         lsh_index: object | None = None
         thresholds: dict = field(default_factory=dict)
+        source_records_by_entity: dict = field(default_factory=dict)
 
         def get_fields(self, cdm_entity_id):
             return {}
+
+        def find_entity_by_source_record(self, tenant_id, cdm_entity_type, source_system, source_record_id):
+            return self.source_records_by_entity.get(
+                (tenant_id, cdm_entity_type, source_system, source_record_id)
+            )
 
     @dataclass
     class _FakeBroadcast:

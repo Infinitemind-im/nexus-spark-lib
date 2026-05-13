@@ -216,21 +216,25 @@ def resolve(
         )
         ER_SIGNAL_SCORES.labels(tenant_id=tenant_id, cdm_entity_type=cdm_entity_type).observe(score_b or 0.0)
 
+        threshold_config = _get_threshold_config(er_index, tenant_id, cdm_entity_type)
+        auto_apply = threshold_config["auto_apply_threshold"]
+        review_lower = threshold_config["review_lower_bound"]
+
         score_c_lift = 0.0
         signal_c_driver = _get_signal_c_driver(neo4j_driver)
-        if signal_c_driver and candidate_b:
+        if _should_run_signal_c(score_b, candidate_b, review_lower, auto_apply) and signal_c_driver:
             score_c_lift = run_signal_c(
                 driver=signal_c_driver,
                 cdm_entity_id=candidate_b,
                 tenant_id=tenant_id,
+                cdm_entity_type=cdm_entity_type,
+                source_system=source_system,
+                fields=fields,
+                er_index=er_index,
             )
             ER_SIGNAL_SCORES.labels(tenant_id=tenant_id, cdm_entity_type=cdm_entity_type).observe(score_c_lift)
 
         final_score = (score_b or 0.0) + score_c_lift
-
-        threshold_config = _get_threshold_config(er_index, tenant_id, cdm_entity_type)
-        auto_apply = threshold_config["auto_apply_threshold"]
-        review_lower = threshold_config["review_lower_bound"]
 
         if final_score >= auto_apply and candidate_b:
             resolved_method = (
@@ -390,6 +394,18 @@ def _get_threshold_config(er_index: Any, tenant_id: str, cdm_entity_type: str) -
         "auto_apply_threshold": auto_apply,
         "review_lower_bound": review_lower,
     }
+
+
+def _should_run_signal_c(
+    score_b: float | None,
+    candidate_b: str | None,
+    review_lower: float,
+    auto_apply: float,
+) -> bool:
+    if not candidate_b:
+        return False
+    score = _safe_float(score_b)
+    return review_lower <= score < auto_apply
 
 
 def _matches_any_attribute(attribute_name: str, configured_attributes: list[str]) -> bool:

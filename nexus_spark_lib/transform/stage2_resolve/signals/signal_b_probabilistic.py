@@ -24,6 +24,14 @@ _DEFAULT_WEIGHTS = {
     "date_of_birth": 0.10,
 }
 
+_ATTRIBUTE_KIND_HINTS = {
+    "full_name": "name",
+    "email": "email",
+    "phone": "phone",
+    "address": "free_text",
+    "date_of_birth": "exact",
+}
+
 
 def run_signal_b(
     tenant_id: str,
@@ -69,61 +77,93 @@ def _score_pair(
     total_weight = 0.0
     weighted_score = 0.0
 
-    def _val(fields: dict, key: str) -> str:
-        v = fields.get(key, {})
-        return (v.get("value") or "") if isinstance(v, dict) else str(v or "")
+    for attr_name, weight in weights.items():
+        w = float(weight or 0.0)
+        if w <= 0.0:
+            continue
 
-    # Full name — Jaro-Winkler
-    if "full_name" in weights:
-        a_name = _val(record_a, "full_name")
-        b_name = _val(record_b, "full_name")
-        if a_name and b_name:
-            sim = jaro_winkler_similarity(a_name, b_name)
-            # Phonetic bonus: Soundex/Metaphone same → +0.05
-            if phonetic_match(a_name, b_name):
-                sim = min(sim + 0.05, 1.0)
-            w = weights["full_name"]
-            weighted_score += sim * w
-            total_weight += w
+        field_a = record_a.get(attr_name)
+        field_b = record_b.get(attr_name)
+        value_a = _field_value(field_a)
+        value_b = _field_value(field_b)
+        if value_a is None or value_b is None:
+            continue
 
-    # Email — local-part Levenshtein × domain exact match
-    if "email" in weights:
-        a_email = _val(record_a, "email")
-        b_email = _val(record_b, "email")
-        if a_email and b_email:
-            sim = email_similarity(a_email, b_email)
-            w = weights["email"]
-            weighted_score += sim * w
-            total_weight += w
-
-    # Phone — Levenshtein (normalised)
-    if "phone" in weights:
-        a_phone = _normalise_phone(_val(record_a, "phone"))
-        b_phone = _normalise_phone(_val(record_b, "phone"))
-        if a_phone and b_phone:
-            sim = levenshtein_similarity(a_phone, b_phone)
-            w = weights["phone"]
-            weighted_score += sim * w
-            total_weight += w
-
-    # Date of birth — exact match → 1.0, else 0.0
-    if "date_of_birth" in weights:
-        a_dob = _val(record_a, "date_of_birth")
-        b_dob = _val(record_b, "date_of_birth")
-        if a_dob and b_dob:
-            sim = 1.0 if a_dob == b_dob else 0.0
-            w = weights["date_of_birth"]
-            weighted_score += sim * w
-            total_weight += w
+        sim = _attribute_similarity(attr_name, field_a, field_b, value_a, value_b)
+        weighted_score += sim * w
+        total_weight += w
 
     if total_weight == 0.0:
         return 0.0
     return weighted_score / total_weight
 
 
+def _field_value(field: Any) -> Any:
+    if isinstance(field, dict):
+        return field.get("value")
+    return field
+
+
+def _attribute_similarity(
+    attr_name: str,
+    field_a: Any,
+    field_b: Any,
+    value_a: Any,
+    value_b: Any,
+) -> float:
+    kind = _resolve_similarity_kind(attr_name, field_a, field_b)
+
+    if kind == "name":
+        a_name = str(value_a or "")
+        b_name = str(value_b or "")
+        if not a_name or not b_name:
+            return 0.0
+        sim = jaro_winkler_similarity(a_name, b_name)
+        if phonetic_match(a_name, b_name):
+            sim = min(sim + 0.05, 1.0)
+        return sim
+
+    if kind == "email":
+        return email_similarity(str(value_a or ""), str(value_b or ""))
+
+    if kind == "phone":
+        return levenshtein_similarity(
+            _normalise_phone(str(value_a or "")),
+            _normalise_phone(str(value_b or "")),
+        )
+
+    if kind == "free_text":
+        return levenshtein_similarity(
+            _normalise_text(str(value_a or "")),
+            _normalise_text(str(value_b or "")),
+        )
+
+    return 1.0 if str(value_a).strip().lower() == str(value_b).strip().lower() else 0.0
+
+
+def _resolve_similarity_kind(attr_name: str, field_a: Any, field_b: Any) -> str:
+    for field in (field_a, field_b):
+        if not isinstance(field, dict):
+            continue
+        kind = str(field.get("attribute_kind") or "").strip().lower()
+        if kind and kind != "foreign_key":
+            return "free_text" if kind == "address" else kind
+
+    lowered = str(attr_name or "").strip().lower()
+    for hint, kind in _ATTRIBUTE_KIND_HINTS.items():
+        if lowered == hint or lowered.endswith(f".{hint}") or hint in lowered:
+            return kind
+
+    return "exact"
+
+
 def _normalise_phone(phone: str) -> str:
     """Strip all non-digit characters for comparison."""
     return "".join(c for c in phone if c.isdigit())
+
+
+def _normalise_text(value: str) -> str:
+    return " ".join(value.lower().split())
 
 
 def _get_weights(er_index: Any, tenant_id: str, cdm_entity_type: str) -> dict:
