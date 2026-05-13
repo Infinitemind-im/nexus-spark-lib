@@ -252,3 +252,59 @@ def test_new_entity_uses_stage1_blocking_key(
 
     assert row["er_resolution_method"] == "new_entity"
     assert row["cdm_entity_id"] == generate_cdm_entity_id("tenant_acme", "contact", blocking_key)
+
+
+def test_resolve_uses_configured_thresholds_for_auto_apply(
+    spark,
+    mock_er_index_broadcast,
+    monkeypatch,
+):
+    import nexus_spark_lib.transform.stage2_resolve as stage2_resolve
+
+    schema = StructType([
+        StructField("tenant_id", StringType(), False),
+        StructField("connector_id", StringType(), False),
+        StructField("source_system", StringType(), False),
+        StructField("source_table", StringType(), False),
+        StructField("source_record_id", StringType(), False),
+        StructField("source_op", StringType(), False),
+        StructField("normalised_json", StringType(), False),
+        StructField("changed_canonical_attributes_json", StringType(), False),
+        StructField("materialization_level", StringType(), False),
+        StructField("cdm_entity_type", StringType(), False),
+        StructField("blocking_key", StringType(), False),
+    ])
+
+    df = spark.createDataFrame([
+        (
+            "tenant_acme",
+            "conn_salesforce",
+            "salesforce",
+            "Contact",
+            "003abc",
+            "INSERT",
+            json.dumps({"email": {"value": "alice@acme.com"}}),
+            "[]",
+            "hot",
+            "contact",
+            "bk-001",
+        )
+    ], schema=schema)
+
+    mock_er_index_broadcast.value.thresholds = {
+        ("tenant_acme", "contact"): {
+            "weights": {"email": 1.0},
+            "auto_apply_threshold": 0.92,
+            "review_lower_bound": 0.75,
+        },
+    }
+
+    monkeypatch.setattr(stage2_resolve, "run_signal_a", lambda **_kwargs: None)
+    monkeypatch.setattr(stage2_resolve, "run_signal_b", lambda **_kwargs: (0.93, "gr:candidate-001"))
+
+    result = stage2_resolve.resolve(df, mock_er_index_broadcast)
+    row = result.collect()[0]
+
+    assert row["er_resolution_method"] == "spark_probabilistic"
+    assert row["cdm_entity_id"] == "gr:candidate-001"
+    assert row["is_provisional"] is False
