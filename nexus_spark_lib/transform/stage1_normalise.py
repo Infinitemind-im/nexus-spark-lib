@@ -201,12 +201,22 @@ def _normalise_row(
                     tenant_id=tenant_id,
                 )
 
-                normalised_fields[cdm_attr] = {
+                normalised_entry = {
                     "value": value,
                     "quality": quality.value,
                     "source_attribute": raw_key,
                     "pii_flag": bool(field_meta.get("pii", False)),
                 }
+
+                attribute_kind = str(field_meta.get("attribute_kind") or "").strip().lower()
+                if attribute_kind:
+                    normalised_entry["attribute_kind"] = attribute_kind
+
+                fk_target_entity_type = str(field_meta.get("fk_target_entity_type") or "").strip()
+                if fk_target_entity_type:
+                    normalised_entry["fk_target_entity_type"] = fk_target_entity_type
+
+                normalised_fields[cdm_attr] = normalised_entry
 
             return normalised_fields, source_extras
 

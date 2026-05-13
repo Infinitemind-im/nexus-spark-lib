@@ -121,12 +121,26 @@ async def load_er_index_snapshot(conn: asyncpg.Connection) -> ErIndexSnapshot:
         for row in threshold_rows
     }
 
+    source_records_by_entity: dict[tuple[str, str, str, str], str] = {}
+    for row in rows:
+        tenant_id = str(row["tenant_id"])
+        cdm_entity_type = str(row["cdm_entity_type"] or "")
+        source_record_id = str(row["source_record_id"] or "")
+        source_system = str(row["source_system"] or row["connector_id"] or "")
+        if not cdm_entity_type or not source_record_id or not source_system:
+            continue
+        source_records_by_entity.setdefault(
+            (tenant_id, cdm_entity_type, source_system, source_record_id),
+            row["cdm_entity_id"],
+        )
+
     return ErIndexSnapshot(
         snapshot=snapshot,
         deterministic_columns=deterministic_columns,
         thresholds=thresholds,
         snapshot_ts=datetime.utcnow().isoformat(),
         deterministic_hash_count=len(deterministic_rows),
+        _source_records_by_entity=source_records_by_entity,
     )
 
 

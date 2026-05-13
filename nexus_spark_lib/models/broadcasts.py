@@ -65,6 +65,7 @@ class ErIndexSnapshot:
     deterministic_hash_count: int = 0
     lsh_index: object | None = None
     _fields_by_entity: dict[str, dict] = field(default_factory=dict, repr=False)
+    _source_records_by_entity: dict[tuple[str, str, str, str], str] = field(default_factory=dict, repr=False)
 
     @property
     def index(self) -> dict[str, str]:
@@ -73,6 +74,21 @@ class ErIndexSnapshot:
 
     def get_fields(self, cdm_entity_id: str) -> dict:
         return self._fields_by_entity.get(cdm_entity_id, {})
+
+    def find_entity_by_source_record(
+        self,
+        tenant_id: str,
+        cdm_entity_type: str,
+        source_system: str,
+        source_record_id: str,
+    ) -> str | None:
+        lookup_key = (
+            str(tenant_id or ""),
+            str(cdm_entity_type or ""),
+            str(source_system or ""),
+            str(source_record_id or ""),
+        )
+        return self._source_records_by_entity.get(lookup_key)
 
 
 @dataclass
