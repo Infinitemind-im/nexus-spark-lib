@@ -66,11 +66,11 @@ jobs:
           path: dist/
 
       - name: Install twine
-        run: pip install --upgrade twine
+        run: pip install --upgrade twine pkginfo
 
       - name: Publish to GitHub Packages
         env:
-          TWINE_USERNAME: __token__
+          TWINE_USERNAME: ${{ github.repository_owner }}
           TWINE_PASSWORD: ${{ secrets.PACKAGES_TOKEN }}
-          TWINE_REPOSITORY_URL: https://pypi.pkg.github.com/Infinitemind-im/
+          TWINE_REPOSITORY_URL: https://pypi.pkg.github.com/Infinitemind-im/nexus-spark-lib/
         run: twine upload dist/*
