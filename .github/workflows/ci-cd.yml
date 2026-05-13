@@ -66,11 +66,11 @@ jobs:
           path: dist/
 
       - name: Install twine
-        run: pip install twine
+        run: pip install --upgrade twine
 
       - name: Publish to GitHub Packages
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PACKAGES_TOKEN }}
-          TWINE_REPOSITORY_URL: https://pypi.pkg.github.com/Infinitemind-im
+          TWINE_REPOSITORY_URL: https://pypi.pkg.github.com/Infinitemind-im/
         run: twine upload dist/*
