@@ -9,6 +9,8 @@ from __future__ import annotations
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from nexus_spark_lib.config.constants import ConsumerGroups
+
 
 class NexusSparkLibSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -43,6 +45,10 @@ class NexusSparkLibSettings(BaseSettings):
     kafka_bootstrap: str = Field(
         default="localhost:9092",
         alias="KAFKA_BOOTSTRAP",
+    )
+    kafka_consumer_group: str = Field(
+        default=ConsumerGroups.SPARK_TRANSFORMER,
+        description="Kafka consumer group ID for the Spark transformer runtime.",
     )
 
     # ── Entity Resolution ─────────────────────────────────────────────────────

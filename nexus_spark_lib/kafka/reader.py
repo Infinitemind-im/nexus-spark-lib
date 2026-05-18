@@ -18,7 +18,7 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-from nexus_spark_lib.config.constants import ConsumerGroups, Topics
+from nexus_spark_lib.config.constants import Topics
 from nexus_spark_lib.config.settings import settings
 
 # ── NexusMessage.payload schema for m1.int.raw_records ────────────────────────
@@ -75,7 +75,7 @@ def read_raw_records_stream(
         .option("subscribe", Topics.RAW_RECORDS)
         .option("startingOffsets", starting_offsets)
         .option("maxOffsetsPerTrigger", max_offsets_per_trigger)
-        .option("kafka.group.id", ConsumerGroups.SPARK_TRANSFORMER)
+        .option("kafka.group.id", settings.kafka_consumer_group)
         .option("failOnDataLoss", "false")
         .load()
     )

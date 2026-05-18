@@ -15,7 +15,7 @@ CDC Streaming and Batch Backfill pin a specific version of this library per rele
 Breaking changes require a major version bump and a platform-wide coordination window.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from nexus_spark_lib.transform.stage0_materialization import (
     materialization_gate,
