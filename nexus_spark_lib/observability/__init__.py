@@ -18,7 +18,24 @@ from nexus_spark_lib.observability.metrics import (
     SYNTHESIS_RECORDS,
 )
 from nexus_spark_lib.observability.structured_log import get_stage_logger, log_pii_safe
-from nexus_spark_lib.observability.tracing import get_tracer, init_tracer, stage_span
+
+
+def get_tracer(*args, **kwargs):
+    from nexus_spark_lib.observability.tracing import get_tracer as _get_tracer
+
+    return _get_tracer(*args, **kwargs)
+
+
+def init_tracer(*args, **kwargs):
+    from nexus_spark_lib.observability.tracing import init_tracer as _init_tracer
+
+    return _init_tracer(*args, **kwargs)
+
+
+def stage_span(*args, **kwargs):
+    from nexus_spark_lib.observability.tracing import stage_span as _stage_span
+
+    return _stage_span(*args, **kwargs)
 
 __all__ = [
     "get_stage_logger",
