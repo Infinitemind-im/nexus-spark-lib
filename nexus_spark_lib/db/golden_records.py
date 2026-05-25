@@ -52,17 +52,19 @@ async def upsert_golden_record(
     cdm_entity_type: str,
     state: GoldenRecordState = GoldenRecordState.ACTIVE,
     state_change_reason: str | None = None,
+    successor_id: str | None = None,
 ) -> None:
     """Insert or update a Golden Record header row. Idempotent."""
     await conn.execute(
         f"""
         INSERT INTO {_GRI}
-            (cdm_entity_id, tenant_id, cdm_entity_type, state,
+            (cdm_entity_id, tenant_id, cdm_entity_type, state, successor_id,
              created_at, updated_at, state_changed_at, state_change_reason)
-        VALUES ($1, $2, $3, $4, NOW(), NOW(), NOW(), $5)
+        VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), NOW(), $6)
         ON CONFLICT (cdm_entity_id)
         DO UPDATE SET
             state               = EXCLUDED.state,
+            successor_id        = EXCLUDED.successor_id,
             updated_at          = NOW(),
             state_changed_at    = CASE
                 WHEN {_GRI}.state != EXCLUDED.state THEN NOW()
@@ -70,7 +72,12 @@ async def upsert_golden_record(
             END,
             state_change_reason = EXCLUDED.state_change_reason
         """,
-        cdm_entity_id, tenant_id, cdm_entity_type, state.value, state_change_reason,
+        cdm_entity_id,
+        tenant_id,
+        cdm_entity_type,
+        state.value,
+        successor_id,
+        state_change_reason,
     )
     DB_WRITES.labels(table=_GRI, operation="upsert", status="ok").inc()
 
@@ -87,6 +94,30 @@ async def get_golden_record_state(
     if row:
         return GoldenRecordState(row["state"])
     return None
+
+
+async def resolve_successor(
+    conn: asyncpg.Connection,
+    cdm_entity_id: str,
+) -> str:
+    """Follow successor_id until the active survivor is reached."""
+    visited: set[str] = set()
+    current = cdm_entity_id
+
+    while True:
+        if current in visited:
+            logger.warning("Circular successor_id chain detected starting at %s", cdm_entity_id)
+            return current
+
+        visited.add(current)
+        row = await conn.fetchrow(
+            f"SELECT successor_id FROM {_GRI} WHERE cdm_entity_id = $1",
+            current,
+        )
+        if row is None or row["successor_id"] is None:
+            return current
+
+        current = row["successor_id"]
 
 
 async def apply_synthesis_result(

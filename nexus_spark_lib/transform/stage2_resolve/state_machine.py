@@ -17,7 +17,11 @@ from datetime import datetime
 
 import asyncpg
 
-from nexus_spark_lib.db.golden_records import get_golden_record_state, upsert_golden_record
+from nexus_spark_lib.db.golden_records import (
+    get_golden_record_state,
+    resolve_successor,
+    upsert_golden_record,
+)
 from nexus_spark_lib.db.redirects import insert_redirect
 from nexus_spark_lib.errors.exceptions import ERStateTransitionError
 from nexus_spark_lib.models.er_types import GoldenRecordState
@@ -44,14 +48,14 @@ class GoldenRecordStateMachine:
         current = await get_golden_record_state(self._conn, cdm_entity_id)
         if current is None:
             state = GoldenRecordState.ACTIVE
-        elif current == GoldenRecordState.TOMBSTONED:
+        elif current in {GoldenRecordState.TOMBSTONED, GoldenRecordState.SUPERSEDED}:
             state = GoldenRecordState.ACTIVE
         else:
             state = current
 
         await upsert_golden_record(
             self._conn, cdm_entity_id, self._tenant_id, cdm_entity_type,
-            state=state, state_change_reason=reason,
+            state=state, state_change_reason=reason, successor_id=None,
         )
         ER_STATE_TRANSITIONS.labels(
             from_state=str(current), to_state=state.value, tenant_id=self._tenant_id
@@ -64,20 +68,24 @@ class GoldenRecordStateMachine:
         survivor_id: str,
         cdm_entity_type: str,
     ) -> None:
-        """Supersede the loser and install a redirect to the survivor.
+        """Supersede the loser and record the canonical survivor.
 
-        Survivor is chosen as the GR with the earlier created_at (canonical rule).
+        successor_id is the v0.2 runtime path. The legacy redirect row is still
+        written for compatibility with older readers until they are migrated.
         """
+        ultimate_survivor = await resolve_successor(self._conn, survivor_id)
+
         await upsert_golden_record(
             self._conn, loser_id, self._tenant_id, cdm_entity_type,
             state=GoldenRecordState.SUPERSEDED,
-            state_change_reason=f"merged_into:{survivor_id}",
+            state_change_reason=f"merged_into:{ultimate_survivor}",
+            successor_id=ultimate_survivor,
         )
-        await insert_redirect(self._conn, loser_id, survivor_id, self._tenant_id)
+        await insert_redirect(self._conn, loser_id, ultimate_survivor, self._tenant_id)
         ER_STATE_TRANSITIONS.labels(
             from_state="active", to_state="superseded", tenant_id=self._tenant_id
         ).inc()
-        logger.info("MERGE: %s → %s", loser_id, survivor_id)
+        logger.info("MERGE: %s → %s", loser_id, ultimate_survivor)
 
     async def tombstone(self, cdm_entity_id: str, cdm_entity_type: str) -> None:
         """Mark a Golden Record as TOMBSTONED when all sources are gone."""
