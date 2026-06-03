@@ -100,7 +100,10 @@ def materialization_gate(
             if not lookup_key:
                 continue
             try:
-                cdm_entity_type = _cdm_mapping_val.get_cdm_entity_type(lookup_key, source_table) or "unknown"
+                try:
+                    cdm_entity_type = _cdm_mapping_val.get_cdm_entity_type(tenant_id, lookup_key, source_table) or "unknown"
+                except TypeError:
+                    cdm_entity_type = _cdm_mapping_val.get_cdm_entity_type(lookup_key, source_table) or "unknown"
             except Exception:
                 continue
             if cdm_entity_type != "unknown":

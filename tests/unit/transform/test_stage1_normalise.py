@@ -161,3 +161,62 @@ class TestStage1NormaliseIntegration:
 
         assert normalised["full_name"]["value"] == "Alice Smith"
         assert normalised["email"]["value"] == "alice@acme.com"
+
+    def test_normalise_passes_tenant_to_field_map_lookup(self, spark, mock_fx_rates_broadcast):
+        from datetime import datetime
+
+        from nexus_spark_lib.transform.stage1_normalise import normalise
+
+        mapping = MagicMock()
+
+        def _get_field_map(tenant_id, lookup_key, source_table):
+            if tenant_id == "tenant_acme" and lookup_key == "salesforce" and source_table == "Contact":
+                return {
+                    "full_name": "full_name",
+                    "email": "email",
+                    "__meta__full_name": {"type": "string"},
+                    "__meta__email": {"type": "string"},
+                }
+            return {}
+
+        mapping.get_field_map.side_effect = _get_field_map
+        broadcast = MagicMock()
+        broadcast.value = mapping
+
+        schema = StructType([
+            StructField("tenant_id", StringType(), False),
+            StructField("connector_id", StringType(), False),
+            StructField("source_system", StringType(), True),
+            StructField("source_table", StringType(), False),
+            StructField("cdm_entity_type", StringType(), False),
+            StructField("materialization_level", StringType(), False),
+            StructField("source_record_id", StringType(), False),
+            StructField("source_op", StringType(), False),
+            StructField("source_ts", TimestampType(), True),
+            StructField("after_payload", MapType(StringType(), StringType()), True),
+            StructField("before_payload", MapType(StringType(), StringType()), True),
+        ])
+
+        df = spark.createDataFrame(
+            [(
+                "tenant_acme",
+                "salesforce-prod",
+                "salesforce",
+                "Contact",
+                "contact",
+                "hot",
+                "003abc",
+                "INSERT",
+                datetime(2024, 3, 1),
+                {"full_name": "Alice Smith", "email": "alice@acme.com"},
+                None,
+            )],
+            schema=schema,
+        )
+
+        result = normalise(df, broadcast, mock_fx_rates_broadcast)
+        row = result.collect()[0]
+        normalised = json.loads(row["normalised_json"])
+
+        assert normalised["full_name"]["value"] == "Alice Smith"
+        assert normalised["email"]["value"] == "alice@acme.com"

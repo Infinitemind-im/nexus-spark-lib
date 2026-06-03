@@ -178,7 +178,7 @@ def _normalise_row(
 
         # --- Business rule 1: CDM field-level mapping ---
         # cdm_entity_type is pre-resolved by Stage 0; only field map is needed here.
-        field_map = _resolve_field_map(mapping, connector_id, source_system, source_table)
+        field_map = _resolve_field_map(mapping, tenant_id, connector_id, source_system, source_table)
 
         def _normalise_payload(payload: dict[str, Any]) -> tuple[dict[str, dict], dict[str, Any]]:
             normalised_fields: dict[str, dict] = {}
@@ -371,6 +371,7 @@ def _extract_normalised_value(field: Any) -> Any:
 
 def _resolve_cdm_type(
     mapping: Any,
+    tenant_id: str,
     connector_id: str | None,
     source_system: str | None,
     source_table: str,
@@ -379,7 +380,10 @@ def _resolve_cdm_type(
         if not lookup_key:
             continue
         try:
-            cdm_entity_type = mapping.get_cdm_entity_type(lookup_key, source_table) or "unknown"
+            try:
+                cdm_entity_type = mapping.get_cdm_entity_type(tenant_id, lookup_key, source_table) or "unknown"
+            except TypeError:
+                cdm_entity_type = mapping.get_cdm_entity_type(lookup_key, source_table) or "unknown"
         except Exception:
             continue
         if cdm_entity_type != "unknown":
@@ -389,6 +393,7 @@ def _resolve_cdm_type(
 
 def _resolve_field_map(
     mapping: Any,
+    tenant_id: str,
     connector_id: str | None,
     source_system: str | None,
     source_table: str,
@@ -397,7 +402,10 @@ def _resolve_field_map(
         if not lookup_key:
             continue
         try:
-            field_map = mapping.get_field_map(lookup_key, source_table) or {}
+            try:
+                field_map = mapping.get_field_map(tenant_id, lookup_key, source_table) or {}
+            except TypeError:
+                field_map = mapping.get_field_map(lookup_key, source_table) or {}
         except Exception:
             continue
         if field_map:

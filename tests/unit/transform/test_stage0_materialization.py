@@ -280,6 +280,52 @@ class TestStage0Integration:
         assert row["cdm_entity_type"] == "contact"
         assert row["materialization_level"] == "hot"
 
+    def test_materialisation_gate_passes_tenant_to_mapping_lookup(self, spark, mock_policy_broadcast):
+        from nexus_spark_lib.transform.stage0_materialization import materialization_gate
+
+        mapping = MagicMock()
+
+        def _get_cdm_entity_type(tenant_id, lookup_key, source_table):
+            if tenant_id == "tenant_acme" and lookup_key == "salesforce" and source_table == "Contact":
+                return "contact"
+            return "unknown"
+
+        mapping.get_cdm_entity_type.side_effect = _get_cdm_entity_type
+        broadcast = MagicMock()
+        broadcast.value = mapping
+
+        schema = StructType([
+            StructField("tenant_id", StringType(), False),
+            StructField("connector_id", StringType(), False),
+            StructField("source_system", StringType(), True),
+            StructField("source_table", StringType(), False),
+            StructField("source_record_id", StringType(), False),
+            StructField("source_op", StringType(), False),
+            StructField("source_ts", TimestampType(), True),
+            StructField("after_payload", MapType(StringType(), StringType()), True),
+            StructField("before_payload", MapType(StringType(), StringType()), True),
+        ])
+
+        df = spark.createDataFrame(
+            [(
+                "tenant_acme",
+                "salesforce-prod",
+                "salesforce",
+                "Contact",
+                "r1",
+                "INSERT",
+                datetime(2024, 3, 1),
+                {"full_name": "Alice"},
+                None,
+            )],
+            schema=schema,
+        )
+
+        result = materialization_gate(df, broadcast, mock_policy_broadcast)
+        row = result.collect()[0]
+
+        assert row["cdm_entity_type"] == "contact"
+
 
 class TestPredicateEvaluator:
     """Unit tests for the expanded _eval_predicate grammar."""
