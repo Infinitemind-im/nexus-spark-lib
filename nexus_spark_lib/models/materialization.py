@@ -104,10 +104,13 @@ class MaterializationPolicy:
 
         Merges exact-scope rules with wildcard ("*") rules so that tenant-wide
         defaults (e.g. a decay rule for all entity types) are always considered.
+        Global rules stored under tenant_id="*" are also inherited by real tenants.
         """
         exact = self.rules_by_scope.get((tenant_id, cdm_entity_type), [])
         wildcard = self.rules_by_scope.get((tenant_id, "*"), [])
-        return exact + wildcard
+        global_exact = self.rules_by_scope.get(("*", cdm_entity_type), [])
+        global_wildcard = self.rules_by_scope.get(("*", "*"), [])
+        return exact + wildcard + global_exact + global_wildcard
 
     def evaluate(
         self,

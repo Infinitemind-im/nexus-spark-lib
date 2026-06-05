@@ -395,6 +395,21 @@ class TestPredicateEvaluator:
         assert policy.evaluate("t1", "Party").level == MaterializationLevel.HOT
         assert policy.evaluate("t1", "Transaction.Invoice").level == MaterializationLevel.HOT
 
+    def test_global_tenant_rules_apply_to_real_tenants(self):
+        """Rules stored under tenant_id='*' are inherited by tenant-specific evaluations."""
+        policy = MaterializationPolicy()
+        global_rule = PolicyRule(
+            rule_id="global-hot", tenant_id="*", scope="transaction",
+            predicate="TRUE", target_level=MaterializationLevel.HOT,
+            priority=10, rule_type="base",
+        )
+        policy.rules_by_scope[("*", "transaction")] = [global_rule]
+
+        decision = policy.evaluate("asensia189", "transaction")
+
+        assert decision.level == MaterializationLevel.HOT
+        assert decision.applied_rule_id == "global-hot"
+
     def test_rule_type_tiebreak_manual_beats_decay(self):
         """Same priority: manual beats decay."""
         policy = MaterializationPolicy()
