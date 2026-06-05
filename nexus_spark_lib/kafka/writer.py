@@ -98,6 +98,7 @@ def prepare_kafka_output(df: DataFrame) -> DataFrame:
     def _to_nexus_message(
         tenant_id: str,
         source_system: str,
+        source_record_id: str,
         cdm_entity_id: str,
         cdm_entity_type: str,
         transform_result_json: str,
@@ -113,7 +114,7 @@ def prepare_kafka_output(df: DataFrame) -> DataFrame:
             topic=CrossModuleTopicNamer.M1Internal.TRANSFORMED_RECORDS,
             tenant_id=tenant_id,
             source_system=source_system or "",
-            source_record_id=cdm_entity_id or "",
+            source_record_id=source_record_id or "",
             entity_type=cdm_entity_type or "",
             permission_scope={},
             payload=json.loads(transform_result_json),
@@ -130,6 +131,7 @@ def prepare_kafka_output(df: DataFrame) -> DataFrame:
         _to_nexus_message(
             F.col("tenant_id"),
             F.col("source_system"),
+            F.col("source_record_id"),
             F.col("cdm_entity_id"),
             F.col("cdm_entity_type"),
             F.col("transform_result_json"),

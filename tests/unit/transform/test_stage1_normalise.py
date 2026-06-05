@@ -220,3 +220,99 @@ class TestStage1NormaliseIntegration:
 
         assert normalised["full_name"]["value"] == "Alice Smith"
         assert normalised["email"]["value"] == "alice@acme.com"
+
+    def test_normalise_falls_back_to_source_record_id_when_blocking_rules_missing(
+        self,
+        spark,
+        mock_cdm_mapping_broadcast,
+        mock_fx_rates_broadcast,
+    ):
+        from datetime import datetime
+
+        from nexus_spark_lib._internal.hash_utils import blocking_key_hash
+        from nexus_spark_lib.transform.stage1_normalise import normalise
+
+        schema = StructType([
+            StructField("tenant_id", StringType(), False),
+            StructField("connector_id", StringType(), False),
+            StructField("source_table", StringType(), False),
+            StructField("cdm_entity_type", StringType(), False),
+            StructField("materialization_level", StringType(), False),
+            StructField("source_record_id", StringType(), False),
+            StructField("source_op", StringType(), False),
+            StructField("source_ts", TimestampType(), True),
+            StructField("after_payload", MapType(StringType(), StringType()), True),
+            StructField("before_payload", MapType(StringType(), StringType()), True),
+        ])
+
+        df = spark.createDataFrame(
+            [(
+                "tenant_acme",
+                "conn_salesforce",
+                "Contact",
+                "contact",
+                "hot",
+                "003abc",
+                "INSERT",
+                datetime(2024, 3, 1),
+                {"full_name": "Alice Smith", "email": "alice@acme.com"},
+                None,
+            )],
+            schema=schema,
+        )
+
+        row = normalise(df, mock_cdm_mapping_broadcast, mock_fx_rates_broadcast).collect()[0]
+        assert row["blocking_key"] == blocking_key_hash("tenant_acme", "contact", "003abc")
+
+    def test_normalise_uses_identifier_like_field_before_source_record_id_when_rules_missing(
+        self,
+        spark,
+        mock_fx_rates_broadcast,
+    ):
+        from datetime import datetime
+        from unittest.mock import MagicMock
+
+        from nexus_spark_lib._internal.hash_utils import blocking_key_hash
+        from nexus_spark_lib.transform.stage1_normalise import normalise
+
+        mapping = MagicMock()
+        mapping.get_field_map.return_value = {
+            "Id": "reference.id",
+            "Name": "name",
+            "__meta__Id": {"type": "string"},
+            "__meta__Name": {"type": "string"},
+        }
+        broadcast = MagicMock()
+        broadcast.value = mapping
+
+        schema = StructType([
+            StructField("tenant_id", StringType(), False),
+            StructField("connector_id", StringType(), False),
+            StructField("source_table", StringType(), False),
+            StructField("cdm_entity_type", StringType(), False),
+            StructField("materialization_level", StringType(), False),
+            StructField("source_record_id", StringType(), False),
+            StructField("source_op", StringType(), False),
+            StructField("source_ts", TimestampType(), True),
+            StructField("after_payload", MapType(StringType(), StringType()), True),
+            StructField("before_payload", MapType(StringType(), StringType()), True),
+        ])
+
+        df = spark.createDataFrame(
+            [(
+                "tenant_acme",
+                "conn_salesforce",
+                "Opportunity",
+                "transaction",
+                "hot",
+                "src-001",
+                "INSERT",
+                datetime(2024, 3, 1),
+                {"Id": "OPP-001", "Name": "Big Deal"},
+                None,
+            )],
+            schema=schema,
+        )
+
+        row = normalise(df, broadcast, mock_fx_rates_broadcast).collect()[0]
+        assert row["blocking_key"] == blocking_key_hash("tenant_acme", "transaction", "opp-001")

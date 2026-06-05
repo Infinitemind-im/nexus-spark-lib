@@ -78,7 +78,9 @@ def normalise(
         blocking_rules_broadcast: Optional Broadcast[dict] — entity_blocking_rules per
                                   (tenant_id, cdm_entity_type) → list[str] of CDM field
                                   names used to form the LSH blocking key.
-                                  When None, blocking_key falls back to a type-level hash.
+                                  When missing or unresolved, blocking_key falls back
+                                  to stable identifier-like canonical fields and then
+                                  to source_record_id to avoid many-to-one collapse.
 
     Returns:
         DataFrame with added columns:
@@ -251,7 +253,7 @@ def _normalise_row(
         # Derived from entity_blocking_rules: concatenate configured CDM field values
         # to form the value fed into the blocking hash.
         blocking_key = _compute_blocking_key(
-            tenant_id, cdm_entity_type, normalised_fields, _blocking_rules_val
+            tenant_id, cdm_entity_type, normalised_fields, _blocking_rules_val, source_record_id
         )
 
         return (
@@ -309,6 +311,7 @@ def _compute_blocking_key(
     cdm_entity_type: str,
     normalised_fields: dict,
     blocking_rules_bc,
+    source_record_id: str,
 ) -> str:
     """Compute the LSH blocking key from entity_blocking_rules.
 
@@ -317,9 +320,10 @@ def _compute_blocking_key(
     this (tenant_id, cdm_entity_type). The values are lowercased and truncated
     to 32 chars each, then joined and hashed.
 
-    Falls back to a type-level hash when no blocking rules are configured,
-    which places all records of the same entity type in the same bucket —
-    correct but less efficient for large corpora.
+    When rules are missing or resolve to empty values, degrade safely:
+    prefer identifier-like canonical attributes already present on the record,
+    then fall back to source_record_id. This avoids collapsing an entire entity
+    type into a single bucket when the catalogue is incomplete.
     """
     from nexus_spark_lib._internal.hash_utils import blocking_key_hash
 
@@ -332,18 +336,120 @@ def _compute_blocking_key(
         except Exception:
             pass
 
-    if blocking_columns:
-        parts = []
-        for col in blocking_columns:
-            entry = normalised_fields.get(col)
-            val = entry.get("value") if isinstance(entry, dict) else entry
-            if val is not None:
-                parts.append(str(val).lower()[:32])
-        blocking_value = "|".join(parts) if parts else cdm_entity_type
+    parts = _extract_blocking_parts(normalised_fields, blocking_columns)
+    if parts:
+        blocking_value = "|".join(parts)
     else:
-        blocking_value = cdm_entity_type
+        blocking_value = _derive_fallback_blocking_value(
+            cdm_entity_type=cdm_entity_type,
+            normalised_fields=normalised_fields,
+            source_record_id=source_record_id,
+        )
 
     return blocking_key_hash(tenant_id, cdm_entity_type, blocking_value)
+
+
+_FALLBACK_BLOCKING_EXACT_PRIORITY = (
+    "identifier",
+    "id",
+    "external_id",
+    "unique_identifier",
+    "record_id",
+    "transaction_id",
+    "document_id",
+    "order_id",
+    "invoice_id",
+    "payment_id",
+    "tracking_number",
+    "document_number",
+    "order_number",
+    "invoice_number",
+    "reference_number",
+)
+_FALLBACK_BLOCKING_EXACT_RANK = {
+    name: index for index, name in enumerate(_FALLBACK_BLOCKING_EXACT_PRIORITY)
+}
+_FALLBACK_BLOCKING_SUFFIXES = ("_id", "_identifier", "_number", "_code")
+
+
+def _extract_blocking_parts(
+    normalised_fields: dict[str, Any],
+    blocking_columns: list[str],
+) -> list[str]:
+    parts: list[str] = []
+    for column_name in blocking_columns:
+        entry = normalised_fields.get(column_name)
+        part = _normalise_blocking_part(entry.get("value") if isinstance(entry, dict) else entry)
+        if part:
+            parts.append(part)
+    return parts
+
+
+def _derive_fallback_blocking_value(
+    cdm_entity_type: str,
+    normalised_fields: dict[str, Any],
+    source_record_id: str,
+) -> str:
+    candidate_parts: list[str] = []
+    seen_parts: set[str] = set()
+
+    for attribute_name in sorted(normalised_fields, key=_fallback_blocking_sort_key):
+        entry = normalised_fields.get(attribute_name)
+        if not _is_fallback_blocking_candidate(attribute_name, entry):
+            continue
+
+        part = _normalise_blocking_part(entry.get("value") if isinstance(entry, dict) else entry)
+        if not part or part in seen_parts:
+            continue
+
+        candidate_parts.append(part)
+        seen_parts.add(part)
+        if len(candidate_parts) >= 3:
+            break
+
+    if candidate_parts:
+        return "|".join(candidate_parts)
+
+    source_record_part = _normalise_blocking_part(source_record_id)
+    if source_record_part:
+        return source_record_part
+    return cdm_entity_type
+
+
+def _fallback_blocking_sort_key(attribute_name: str) -> tuple[int, str]:
+    base_name = _blocking_attribute_basename(attribute_name)
+    return (_FALLBACK_BLOCKING_EXACT_RANK.get(base_name, len(_FALLBACK_BLOCKING_EXACT_PRIORITY)), attribute_name)
+
+
+def _is_fallback_blocking_candidate(attribute_name: str, entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+
+    if entry.get("fk_target_entity_type"):
+        return False
+
+    attribute_kind = str(entry.get("attribute_kind") or "").strip().lower()
+    if "foreign" in attribute_kind:
+        return False
+
+    base_name = _blocking_attribute_basename(attribute_name)
+    return (
+        base_name in _FALLBACK_BLOCKING_EXACT_RANK
+        or any(base_name.endswith(suffix) for suffix in _FALLBACK_BLOCKING_SUFFIXES)
+    )
+
+
+def _blocking_attribute_basename(attribute_name: str) -> str:
+    return str(attribute_name or "").rsplit(".", 1)[-1].strip().lower()
+
+
+def _normalise_blocking_part(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return text[:32]
 
 
 def _compute_changed_canonical_attributes(
