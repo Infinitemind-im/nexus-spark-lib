@@ -1,5 +1,5 @@
-[build-system]
-requires = ["setuptools>=61"]
+﻿[build-system]
+requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,15 +8,63 @@ version = "0.1.2"
 description = "Shared Spark transformation library for the NEXUS platform pipeline"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+license = { text = "Proprietary" }
+authors = [{ name = "Mentis Consulting", email = "platform@mentis.io" }]
+
+dependencies = [
+    # Shared NEXUS foundation — Kafka, DB, tenant context, CDM entities
+    "nexus-core[kafka] @ git+https://github.com/Infinitemind-im/nexus-core-v2.git@main",
+    # Spark runtime — pin minor, allow patches
+    "pyspark>=3.5,<4.0",
+    # Graph store — Signal C entity resolution
+    "neo4j>=5.0,<6.0",
+    # String similarity — Signal B (Jaro-Winkler, Levenshtein, Soundex)
+    "jellyfish>=1.0",
+    # Phonetic matching — Signal B Metaphone
+    "metaphone>=0.6",
+    # Config validation
+    "pydantic>=2.0,<3.0",
+    "pydantic-settings>=2.0",
+    # Observability
+    "prometheus-client>=0.19",
+    "opentelemetry-sdk>=1.24",
+    "opentelemetry-api>=1.24",
+    # LSH blocking — Signal B fan-out reduction
+    "datasketch>=1.6",
+    # Async PostgreSQL (DB writes from Spark executors via asyncio)
+    "asyncpg>=0.29",
+]
 
 [project.optional-dependencies]
-postgres = ["psycopg2-binary>=2.9"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "faker>=25.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["nexus_spark_lib*"]
 
 [tool.pytest.ini_options]
+asyncio_mode = "auto"
 testpaths = ["tests"]
-pythonpath = ["."]
+addopts = "-v --tb=short"
+markers = [
+    "unit: fast, no Spark/DB required",
+    "integration: requires Spark session and test containers",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "N", "UP", "B", "S", "ANN"]
+ignore = ["ANN101", "ANN102", "S101"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
