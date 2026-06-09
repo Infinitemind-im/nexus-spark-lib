@@ -77,6 +77,12 @@ def pytest_configure(config: pytest.Config) -> None:
             "C:\\Program Files\\Python311\\python.exe."
         )
 
+# Pydantic settings load at import time; tests do not require a live DB for most cases.
+os.environ.setdefault(
+    "NEXUS_DB_DSN",
+    "postgresql://nexus_app:nexusapp@127.0.0.1:5444/nexus_db?sslmode=disable",
+)
+
 # ---------------------------------------------------------------------------
 # SparkSession — reused across the entire test session for speed
 # ---------------------------------------------------------------------------

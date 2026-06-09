@@ -45,6 +45,39 @@ def phonetic_match(a: str, b: str) -> bool:
     return soundex_match(a, b) or metaphone_match(a, b)
 
 
+def phone_e164_match_score(
+    a: str,
+    b: str,
+    default_region: str | None = None,
+) -> float:
+    """Exact match after E.164 normalisation (spec: exact post-E.164).
+
+    Returns 1.0 if both numbers parse to the same E.164 string, else 0.0.
+    If parsing fails, falls back to digit-only string equality.
+    """
+    if not a or not b:
+        return 0.0
+    try:
+        import phonenumbers
+        from phonenumbers import NumberParseException
+
+        region = default_region or None
+        try:
+            pa = phonenumbers.parse(a.strip(), region)
+            pb = phonenumbers.parse(b.strip(), region)
+        except NumberParseException:
+            raise ValueError("parse")
+        if not phonenumbers.is_valid_number(pa) or not phonenumbers.is_valid_number(pb):
+            raise ValueError("invalid")
+        na = phonenumbers.format_number(pa, phonenumbers.PhoneNumberFormat.E164)
+        nb = phonenumbers.format_number(pb, phonenumbers.PhoneNumberFormat.E164)
+        return 1.0 if na == nb else 0.0
+    except Exception:
+        da = "".join(c for c in a if c.isdigit())
+        db = "".join(c for c in b if c.isdigit())
+        return 1.0 if da and da == db else 0.0
+
+
 def email_similarity(a: str, b: str) -> float:
     """Compute email similarity: local-part Levenshtein × domain exact match.
 

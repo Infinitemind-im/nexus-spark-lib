@@ -70,7 +70,7 @@ SPARK_TRANSFORM_RESULT_SCHEMA_VERSION = "1.0"
 
 ER_CDM_ENTITY_ID_PREFIX = "gr:"
 ER_AUTO_APPLY_THRESHOLD_DEFAULT = 0.95
-ER_REVIEW_LOWER_BOUND_DEFAULT = 0.70
+ER_REVIEW_LOWER_BOUND_DEFAULT = 0.75
 
 # Signal C (Neo4j) lift values
 ER_SIGNAL_C_DEPTH1_LIFT = 0.05
@@ -81,3 +81,35 @@ ER_SIGNAL_C_MAX_LIFT = 0.10
 
 BATCH_CHECKPOINT_INTERVAL = 10_000    # Write checkpoint every N records
 DELTA_CHECKPOINT_THRESHOLD_DEFAULT = 500_000  # FR-ST-C-01 default
+
+# ── Normalisation parsing helpers (Stage 0) ──────────────────────────────────
+#
+# These are used by stage0_normalise and exposed via nexus_spark_lib.config.
+# They are kept here (rather than settings) because they are pure constants.
+
+NULL_LIKE_STRINGS = {
+    "",
+    "null",
+    "none",
+    "n/a",
+    "na",
+    "nil",
+    "undefined",
+    "nan",
+}
+
+BOOL_TRUE_VALUES = {"true", "t", "yes", "y", "1", "on"}
+BOOL_FALSE_VALUES = {"false", "f", "no", "n", "0", "off"}
+
+# Common date/time formats seen in source systems (best-effort parsing).
+DATE_FORMATS = (
+    "%Y-%m-%d",
+    "%d/%m/%Y",
+    "%m/%d/%Y",
+)
+
+DATETIME_FORMATS = (
+    "%Y-%m-%dT%H:%M:%S.%fZ",
+    "%Y-%m-%dT%H:%M:%SZ",
+    "%Y-%m-%d %H:%M:%S",
+)

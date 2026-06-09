@@ -1,6 +1,7 @@
 from nexus_core.db import SYSTEM_TENANT, get_tenant_scoped_connection  # noqa: F401 — platform RLS helper
 from nexus_spark_lib.db.connection import close_pool, get_pool
 from nexus_spark_lib.db.decision_log import upsert_schema_snapshot, write_decision_log_batch
+from nexus_spark_lib.db.entity_store_presence import EntityStorePresenceReader
 from nexus_spark_lib.db.er_index import (
     delete_by_source,
     get_sources_for_entity,
@@ -9,6 +10,7 @@ from nexus_spark_lib.db.er_index import (
     repoint_to_survivor,
     upsert_batch,
 )
+from nexus_spark_lib.db.er_index_lookup import ErIndexLookup
 from nexus_spark_lib.db.golden_records import (
     apply_synthesis_result,
     delete_provenance_for_source,
@@ -59,4 +61,7 @@ __all__ = [
     # decision log + schema snapshots
     "write_decision_log_batch",
     "upsert_schema_snapshot",
+    # entity store presence + ER lookup
+    "EntityStorePresenceReader",
+    "ErIndexLookup",
 ]

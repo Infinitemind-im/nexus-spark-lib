@@ -124,7 +124,7 @@ async def propagate_merge(
 
     sm = GoldenRecordStateMachine(conn, tenant_id)
     await sm.merge(loser_id, survivor_id, cdm_entity_type)
-    await repoint_to_survivor(conn, loser_id, survivor_id)
+    await repoint_to_survivor(conn, tenant_id, loser_id, survivor_id)
     return ErOperation.MERGE
 
 
@@ -136,12 +136,14 @@ async def queue_review(
     candidate_b: str,
     score: float,
     signal_breakdown: dict,
-) -> None:
-    """Insert a review-band match into er_review_queue (confidence ∈ [0.70, 0.95))."""
-    await queue_for_review(
+) -> bool:
+    """Insert a review-band match into er_review_queue (confidence in review band)."""
+    inserted = await queue_for_review(
         conn, tenant_id, cdm_entity_type, candidate_a, candidate_b,
         score, signal_breakdown,
     )
     logger.info(
-        "Review queued: %s vs %s score=%.3f", candidate_a, candidate_b, score
+        "Review queued: %s vs %s score=%.3f inserted=%s",
+        candidate_a, candidate_b, score, inserted,
     )
+    return inserted

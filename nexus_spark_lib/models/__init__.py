@@ -7,6 +7,8 @@ from nexus_spark_lib.models.broadcasts import (
     MaterializationPolicyBroadcast,
     SurvivorshipBroadcast,
 )
+from nexus_spark_lib.models.entity_store_presence import EntityStorePresence, EntityStoreState
+from nexus_spark_lib.models.er_resolve_index import ErResolveIndex
 from nexus_spark_lib.models.er_types import (
     BlockingRule,
     DeterministicIdColumn,
@@ -46,10 +48,8 @@ from nexus_spark_lib.models.transformed_record import (
 )
 
 __all__ = [
-    # raw_record
     "RawRecord",
     "SourceOp",
-    # transformed_record
     "SparkTransformResult",
     "TransformedField",
     "FieldQuality",
@@ -57,7 +57,6 @@ __all__ = [
     "AttributeProvenance",
     "OperationMetadata",
     "TransformHeaders",
-    # er_types
     "ResolutionMethod",
     "GoldenRecordState",
     "ErOperation",
@@ -65,7 +64,6 @@ __all__ = [
     "ErThresholds",
     "BlockingRule",
     "DeterministicIdColumn",
-    # materialization
     "MaterializationLevel",
     "PolicyRule",
     "MaterializationPolicy",
@@ -80,11 +78,9 @@ __all__ = [
     "SurvivorshipRuleSet",
     "ProvenanceRow",
     "SynthesisResult",
-    # fx
     "FxRates",
     "FxRateEntry",
     "FxConversionResult",
-    # broadcasts
     "CdmMappingBroadcast",
     "CdmMappingIndex",
     "FxRatesBroadcast",
@@ -92,4 +88,7 @@ __all__ = [
     "ErIndexBroadcast",
     "SurvivorshipBroadcast",
     "MaterializationPolicyBroadcast",
+    "EntityStorePresence",
+    "EntityStoreState",
+    "ErResolveIndex",
 ]

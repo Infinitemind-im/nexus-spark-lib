@@ -52,8 +52,8 @@ class NexusSparkLibSettings(BaseSettings):
     )
 
     # ── Entity Resolution ─────────────────────────────────────────────────────
-    er_auto_apply_threshold_default: float = 0.95
-    er_review_lower_bound_default: float = 0.70
+    er_auto_apply_threshold_default: float = 0.92
+    er_review_lower_bound_default: float = 0.75
     er_lsh_num_perm: int = 128          # MinHash permutations for LSH
     er_lsh_threshold: float = 0.5       # Jaccard threshold for LSH candidate generation
     er_signal_c_max_hops: int = 2       # Neo4j traversal depth cap

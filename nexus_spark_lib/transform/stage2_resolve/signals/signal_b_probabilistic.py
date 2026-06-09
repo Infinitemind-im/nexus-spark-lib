@@ -171,3 +171,22 @@ def _get_weights(er_index: Any, tenant_id: str, cdm_entity_type: str) -> dict:
         return er_index.thresholds.get((tenant_id, cdm_entity_type), {}).get("weights", _DEFAULT_WEIGHTS)
     except AttributeError:
         return _DEFAULT_WEIGHTS
+
+
+def classify_signal_b(
+    score: float,
+    candidate_id: str | None,
+    er_index: Any,
+    tenant_id: str,
+    cdm_entity_type: str,
+) -> str:
+    if candidate_id is None or score <= 0:
+        return "no_match"
+    cfg = er_index.thresholds.get((tenant_id, cdm_entity_type), {}) if hasattr(er_index, "thresholds") else {}
+    auto = float(cfg.get("auto_apply_threshold", 0.92))
+    review = float(cfg.get("review_lower_bound", 0.75))
+    if score >= auto:
+        return "auto_apply"
+    if score >= review:
+        return "review"
+    return "no_match"

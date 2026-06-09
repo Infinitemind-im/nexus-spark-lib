@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import asyncpg
 
 from nexus_spark_lib.models.materialization import (
@@ -142,7 +144,38 @@ async def load_er_thresholds(conn: asyncpg.Connection, tenant_id: str) -> dict:
     )
     return {
         r["cdm_entity_type"]: {
-            "weights": r["weights"],
+            "weights": _coerce_weights(r["weights"]),
+            "auto_apply_threshold": float(r["auto_apply_threshold"]),
+            "review_lower_bound": float(r["review_lower_bound"]),
+        }
+        for r in rows
+    }
+
+
+def _coerce_weights(raw: Any) -> dict[str, float]:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): float(v) for k, v in raw.items()}
+    return {}
+
+
+async def load_er_thresholds_broadcast(
+    conn: asyncpg.Connection,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Load all ER threshold rows for Spark broadcast: key (tenant_id, cdm_entity_type).
+
+    Matches the shape read by Signal B / resolve via ``er_index.thresholds``.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT tenant_id, cdm_entity_type, weights, auto_apply_threshold, review_lower_bound
+        FROM nexus_system.er_thresholds
+        """
+    )
+    return {
+        (str(r["tenant_id"]), str(r["cdm_entity_type"])): {
+            "weights": _coerce_weights(r["weights"]),
             "auto_apply_threshold": float(r["auto_apply_threshold"]),
             "review_lower_bound": float(r["review_lower_bound"]),
         }

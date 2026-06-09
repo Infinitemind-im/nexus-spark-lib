@@ -63,17 +63,25 @@ async def queue_for_review(
     candidate_b_id: str,
     combined_score: float,
     signal_breakdown: dict,
-) -> None:
-    """Insert an ER pair into er_review_queue for human review."""
-    await conn.execute(
+) -> bool:
+    """Insert an ER pair into er_review_queue for human review.
+
+    Returns True if a new row was inserted (False on idempotent replay / duplicate pair).
+    """
+    row = await conn.fetchrow(
         f"""
         INSERT INTO {_REVIEW}
             (tenant_id, cdm_entity_type, candidate_a_id, candidate_b_id,
              combined_score, signal_breakdown, status, created_at)
         VALUES ($1, $2, $3, $4, $5, $6, 'pending', NOW())
-        ON CONFLICT DO NOTHING
+        ON CONFLICT (tenant_id, cdm_entity_type, candidate_a_id, candidate_b_id)
+        DO NOTHING
+        RETURNING pair_id
         """,
         tenant_id, cdm_entity_type, candidate_a_id, candidate_b_id,
         combined_score, signal_breakdown,
     )
-    DB_WRITES.labels(table=_REVIEW, operation="insert", status="ok").inc()
+    if row:
+        DB_WRITES.labels(table=_REVIEW, operation="insert", status="ok").inc()
+        return True
+    return False

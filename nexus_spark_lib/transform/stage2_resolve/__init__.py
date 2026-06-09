@@ -27,6 +27,8 @@ from nexus_spark_lib._internal.hash_utils import (
     er_legacy_source_lookup_key,
     er_source_lookup_key,
 )
+from nexus_spark_lib.db.entity_store_presence_loader import lookup_entity_store_state
+from nexus_spark_lib.models.entity_store_presence import EntityStoreState
 from nexus_spark_lib.models.er_types import ResolutionMethod
 from nexus_spark_lib.observability.structured_log import get_stage_logger
 from nexus_spark_lib.transform.stage2_resolve.id_generator import generate_cdm_entity_id
@@ -46,6 +48,7 @@ def resolve(
     er_index_broadcast: Broadcast,
     neo4j_driver: Any | None = None,
     mode: str = "streaming",
+    entity_store_presence_broadcast: Broadcast | None = None,
 ) -> DataFrame:
     """Assign or resolve cdm_entity_id for each record.
 
@@ -54,6 +57,8 @@ def resolve(
         er_index_broadcast: Broadcast[ErIndexBroadcast] — full snapshot of ER index.
         neo4j_driver:       Neo4j driver instance (None disables Signal C).
         mode:               "streaming" | "backfill"
+        entity_store_presence_broadcast: Optional broadcast map
+            ``(tenant_id, cdm_entity_id) -> cold|warm|hot`` from Postgres.
 
     Returns:
         DataFrame with Stage 2 result columns added:
@@ -64,6 +69,7 @@ def resolve(
         - er_review_candidate_id
         - er_signal_b_score
         - er_signal_c_lift
+        - entity_store_materialization / effective_materialization_level (when broadcast set)
     """
     if "changed_canonical_attributes_json" not in df.columns:
         df = df.withColumn("changed_canonical_attributes_json", F.lit("[]"))
@@ -308,7 +314,7 @@ def resolve(
         ),
     )
 
-    return (
+    result = (
         result
         .withColumn("cdm_entity_id", F.col("_er_result.cdm_entity_id"))
         .withColumn("er_resolution_method", F.col("_er_result.er_resolution_method"))
@@ -319,6 +325,47 @@ def resolve(
         .withColumn("er_signal_c_lift", F.col("_er_result.er_signal_c_lift"))
         .drop("_er_result")
     )
+
+    if entity_store_presence_broadcast is not None:
+        presence_snapshot = entity_store_presence_broadcast.value
+
+        def _presence_udf(tenant_id: str, cdm_entity_id: str) -> str:
+            state = lookup_entity_store_state(presence_snapshot, tenant_id, cdm_entity_id)
+            return state.value
+
+        presence_udf = F.udf(_presence_udf, StringType())
+        result = result.withColumn(
+            "entity_store_materialization",
+            presence_udf(F.col("tenant_id"), F.col("cdm_entity_id")),
+        )
+        result = result.withColumn(
+            "effective_materialization_level",
+            F.when(
+                F.col("entity_store_materialization") == EntityStoreState.HOT.value,
+                F.lit(EntityStoreState.HOT.value),
+            )
+            .when(
+                F.col("entity_store_materialization") == EntityStoreState.WARM.value,
+                F.lit(EntityStoreState.WARM.value),
+            )
+            .when(
+                F.col("entity_store_materialization") == EntityStoreState.COLD.value,
+                F.lit(EntityStoreState.COLD.value),
+            )
+            .otherwise(F.col("materialization_level")),
+        )
+        result = result.withColumn(
+            "er_publish_to_m3",
+            F.col("effective_materialization_level") != F.lit(EntityStoreState.COLD.value),
+        )
+    else:
+        result = result.withColumn(
+            "er_publish_to_m3",
+            F.lower(F.coalesce(F.col("materialization_level"), F.lit("warm")))
+            != F.lit(EntityStoreState.COLD.value),
+        )
+
+    return result
 
 
 def _update_requires_reresolution(

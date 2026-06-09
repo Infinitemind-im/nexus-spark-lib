@@ -159,10 +159,10 @@ async def lookup_batch(
         f"""
         SELECT tenant_id, connector_id, source_table, source_record_id, cdm_entity_id
         FROM {_TABLE}
-        WHERE (tenant_id, connector_id, source_table, source_record_id)
-              = ANY(SELECT * FROM unnest(
-                    $1::uuid[], $2::text[], $3::text[], $4::text[]
-                ))
+        WHERE (tenant_id, connector_id, source_table, source_record_id) IN (
+            SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[])
+        )
+        AND is_active = TRUE
         """,
         list(tenant_ids),
         list(connector_ids),
@@ -170,7 +170,12 @@ async def lookup_batch(
         list(source_record_ids),
     )
     return {
-        (r["tenant_id"], r["connector_id"], r["source_table"], r["source_record_id"]): r["cdm_entity_id"]
+        (
+            str(r["tenant_id"]),
+            str(r["connector_id"]),
+            str(r["source_table"]),
+            str(r["source_record_id"]),
+        ): r["cdm_entity_id"]
         for r in rows
     }
 
@@ -204,7 +209,8 @@ async def upsert_batch(
                 confidence         = EXCLUDED.confidence,
                 resolution_method  = EXCLUDED.resolution_method,
                 resolved_at        = NOW(),
-                provisional        = EXCLUDED.provisional
+                provisional        = EXCLUDED.provisional,
+                source_system      = EXCLUDED.source_system
             """,
             [
                 (e[5], e[0], e[1], e[2], e[3], e[4], e[6], e[7], e[8], e[9])
