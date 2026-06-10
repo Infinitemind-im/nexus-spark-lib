@@ -74,7 +74,11 @@ class NexusSparkLibSettings(BaseSettings):
     enable_er_trace: bool = False       # FR-Dev3-S-01: diagnostic trace mode
 
     # ── Spark streaming ───────────────────────────────────────────────────────
-    spark_stream_trigger_seconds: int = 30    # Default micro-batch interval
+    # NFR-D3-01 targets p95 <= 5s/record; 1s micro-batch keeps idle wait low.
+    # Iteration 2 worked-example doc mentions 30s dedup windows — override via env for backfill.
+    spark_stream_trigger_seconds: int = 1
+    er_use_map_in_pandas: bool = True
+    er_driver_singleton_resolve: bool = True
     dead_letter_max_retries: int = 3
 
     @field_validator("materialization_default_level")

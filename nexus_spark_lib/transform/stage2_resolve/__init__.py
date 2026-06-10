@@ -31,6 +31,11 @@ from nexus_spark_lib.db.entity_store_presence_loader import lookup_entity_store_
 from nexus_spark_lib.models.entity_store_presence import EntityStoreState
 from nexus_spark_lib.models.er_types import ResolutionMethod
 from nexus_spark_lib.observability.structured_log import get_stage_logger
+from nexus_spark_lib.transform.stage2_resolve.er_outcomes import (
+    infer_gr_operation,
+    lookup_prior_cdm_entity_id,
+    update_requires_reresolution,
+)
 from nexus_spark_lib.transform.stage2_resolve.id_generator import generate_cdm_entity_id
 from nexus_spark_lib.transform.stage2_resolve.signals.signal_a_deterministic import run_signal_a
 from nexus_spark_lib.transform.stage2_resolve.signals.signal_b_probabilistic import _DEFAULT_WEIGHTS, run_signal_b
@@ -87,6 +92,8 @@ def resolve(
         StructField("er_review_candidate_id", StringType(), True),
         StructField("er_signal_b_score", DoubleType(), False),
         StructField("er_signal_c_lift", DoubleType(), False),
+        StructField("prior_cdm_entity_id", StringType(), True),
+        StructField("er_gr_operation", StringType(), False),
     ])
 
     def _resolve_udf(
@@ -118,7 +125,14 @@ def resolve(
             review_candidate_id: str | None = None,
             signal_b_score: float = 0.0,
             signal_c_lift: float = 0.0,
+            prior_cdm_entity_id: str | None = None,
+            er_gr_operation: str | None = None,
         ) -> dict[str, object]:
+            gr_op = er_gr_operation or infer_gr_operation(
+                prior_cdm_entity_id=prior_cdm_entity_id,
+                new_cdm_entity_id=cdm_entity_id,
+                source_op=source_op,
+            )
             return {
                 "cdm_entity_id": cdm_entity_id,
                 "er_resolution_method": resolution_method,
@@ -127,6 +141,8 @@ def resolve(
                 "er_review_candidate_id": review_candidate_id,
                 "er_signal_b_score": float(signal_b_score),
                 "er_signal_c_lift": float(signal_c_lift),
+                "prior_cdm_entity_id": prior_cdm_entity_id,
+                "er_gr_operation": gr_op,
             }
 
         mat_level = (materialization_level or "warm").lower()
@@ -148,13 +164,7 @@ def resolve(
             )
 
         er_index = er_index_broadcast.value
-        should_rerun_update = _update_requires_reresolution(
-            er_index=er_index,
-            tenant_id=tenant_id,
-            cdm_entity_type=cdm_entity_type,
-            source_op=source_op,
-            changed_canonical_attributes_json=changed_canonical_attributes_json,
-        )
+        source_op_upper = str(source_op or "").upper()
 
         lookup_keys = [
             er_source_lookup_key(
@@ -173,18 +183,47 @@ def resolve(
                 )
             )
 
+        prior_cdm_entity_id = lookup_prior_cdm_entity_id(er_index, lookup_keys)
+
+        if source_op_upper == "RELEVEL" and prior_cdm_entity_id:
+            ER_FAST_PATH_HITS.labels(tenant_id=tenant_id).inc()
+            ER_RECORDS.labels(
+                tenant_id=tenant_id,
+                cdm_entity_type=cdm_entity_type,
+                resolution_method="relevel_skip",
+                status="relevel_skip",
+            ).inc()
+            return _result(
+                prior_cdm_entity_id,
+                "relevel_skip",
+                1.0,
+                prior_cdm_entity_id=prior_cdm_entity_id,
+                er_gr_operation="RELEVEL",
+            )
+
+        should_rerun_update = update_requires_reresolution(
+            er_index=er_index,
+            tenant_id=tenant_id,
+            cdm_entity_type=cdm_entity_type,
+            source_op=source_op,
+            changed_canonical_attributes_json=changed_canonical_attributes_json,
+        )
+
         if not should_rerun_update:
-            for lookup_key in lookup_keys:
-                known = er_index.snapshot.get(lookup_key)
-                if known:
-                    ER_FAST_PATH_HITS.labels(tenant_id=tenant_id).inc()
-                    ER_RECORDS.labels(
-                        tenant_id=tenant_id,
-                        cdm_entity_type=cdm_entity_type,
-                        resolution_method="fast_path",
-                        status="fast_path",
-                    ).inc()
-                    return _result(known, "fast_path", 1.0)
+            if prior_cdm_entity_id:
+                ER_FAST_PATH_HITS.labels(tenant_id=tenant_id).inc()
+                ER_RECORDS.labels(
+                    tenant_id=tenant_id,
+                    cdm_entity_type=cdm_entity_type,
+                    resolution_method="fast_path",
+                    status="fast_path",
+                ).inc()
+                return _result(
+                    prior_cdm_entity_id,
+                    "fast_path",
+                    1.0,
+                    prior_cdm_entity_id=prior_cdm_entity_id,
+                )
 
         fields = json.loads(normalised_json or "{}")
 
@@ -202,7 +241,12 @@ def resolve(
                 resolution_method="deterministic",
                 status="signal_a",
             ).inc()
-            return _result(result_a, ResolutionMethod.DETERMINISTIC.value, 1.0)
+            return _result(
+                result_a,
+                ResolutionMethod.DETERMINISTIC.value,
+                1.0,
+                prior_cdm_entity_id=prior_cdm_entity_id,
+            )
 
         if mat_level == "warm":
             generated_id = generate_cdm_entity_id(tenant_id, cdm_entity_type, blocking_key)
@@ -212,7 +256,12 @@ def resolve(
                 resolution_method="warm_new",
                 status="warm_new",
             ).inc()
-            return _result(generated_id, "warm_new", 1.0)
+            return _result(
+                generated_id,
+                "warm_new",
+                1.0,
+                prior_cdm_entity_id=prior_cdm_entity_id,
+            )
 
         score_b, candidate_b = run_signal_b(
             tenant_id=tenant_id,
@@ -260,6 +309,7 @@ def resolve(
                 final_score,
                 signal_b_score=score_b or 0.0,
                 signal_c_lift=score_c_lift,
+                prior_cdm_entity_id=prior_cdm_entity_id,
             )
 
         if review_lower <= final_score < auto_apply and candidate_b:
@@ -278,6 +328,7 @@ def resolve(
                 review_candidate_id=candidate_b,
                 signal_b_score=score_b or 0.0,
                 signal_c_lift=score_c_lift,
+                prior_cdm_entity_id=prior_cdm_entity_id,
             )
 
         generated_id = generate_cdm_entity_id(tenant_id, cdm_entity_type, resolved_blocking_key)
@@ -293,6 +344,7 @@ def resolve(
             1.0,
             signal_b_score=score_b or 0.0,
             signal_c_lift=score_c_lift,
+            prior_cdm_entity_id=prior_cdm_entity_id,
         )
 
     resolve_udf = F.udf(_resolve_udf, result_schema)
@@ -323,6 +375,8 @@ def resolve(
         .withColumn("er_review_candidate_id", F.col("_er_result.er_review_candidate_id"))
         .withColumn("er_signal_b_score", F.col("_er_result.er_signal_b_score"))
         .withColumn("er_signal_c_lift", F.col("_er_result.er_signal_c_lift"))
+        .withColumn("prior_cdm_entity_id", F.col("_er_result.prior_cdm_entity_id"))
+        .withColumn("er_gr_operation", F.col("_er_result.er_gr_operation"))
         .drop("_er_result")
     )
 
@@ -366,43 +420,6 @@ def resolve(
         )
 
     return result
-
-
-def _update_requires_reresolution(
-    *,
-    er_index: Any,
-    tenant_id: str,
-    cdm_entity_type: str,
-    source_op: str,
-    changed_canonical_attributes_json: str,
-) -> bool:
-    if str(source_op or "").upper() != "UPDATE":
-        return False
-
-    try:
-        changed_attributes = json.loads(changed_canonical_attributes_json or "[]")
-    except Exception:
-        return False
-
-    if not isinstance(changed_attributes, list) or not changed_attributes:
-        return False
-
-    deterministic_columns = _get_deterministic_columns(er_index, tenant_id, cdm_entity_type)
-    similarity_weights = _get_similarity_weights(er_index, tenant_id, cdm_entity_type)
-    relevant_weighted_attributes = [
-        attr_name
-        for attr_name, weight in similarity_weights.items()
-        if _safe_float(weight) > 0.0
-    ]
-
-    for attr_name in changed_attributes:
-        attr = str(attr_name or "")
-        if _matches_any_attribute(attr, deterministic_columns):
-            return True
-        if _matches_any_attribute(attr, relevant_weighted_attributes):
-            return True
-
-    return False
 
 
 def _get_deterministic_columns(er_index: Any, tenant_id: str, cdm_entity_type: str) -> list[str]:

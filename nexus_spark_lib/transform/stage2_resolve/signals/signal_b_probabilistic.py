@@ -11,6 +11,7 @@ from nexus_spark_lib.transform.stage2_resolve.lsh.similarity import (
     levenshtein_similarity,
     phonetic_match,
 )
+from nexus_spark_lib.util.text_similarity import normalize_phone
 from nexus_spark_lib.observability.structured_log import get_stage_logger
 
 logger = get_stage_logger(__name__)
@@ -127,10 +128,13 @@ def _attribute_similarity(
         return email_similarity(str(value_a or ""), str(value_b or ""))
 
     if kind == "phone":
-        return levenshtein_similarity(
-            _normalise_phone(str(value_a or "")),
-            _normalise_phone(str(value_b or "")),
-        )
+        left = normalize_phone(str(value_a or ""))
+        right = normalize_phone(str(value_b or ""))
+        if not left or not right:
+            return 0.0
+        if left == right:
+            return 1.0
+        return levenshtein_similarity(left, right)
 
     if kind == "free_text":
         return levenshtein_similarity(

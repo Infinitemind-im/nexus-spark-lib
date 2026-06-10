@@ -75,13 +75,14 @@ async def persist_entity_resolution_outcome(
             (
                 tenant_id,
                 connector_id,
+                source_system or "",
                 source_table,
                 source_record_id,
                 cdm_entity_id,
+                cdm_entity_type,
                 float(er_confidence),
                 method_db,
                 er_is_provisional,
-                source_system or "",
             )
         ],
     )

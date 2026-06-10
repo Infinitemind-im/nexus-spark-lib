@@ -19,24 +19,17 @@ from nexus_spark_lib.observability.structured_log import get_stage_logger
 logger = get_stage_logger(__name__)
 
 
-def run_signal_a(
+def run_signal_a_collect_matches(
     tenant_id: str,
     cdm_entity_type: str,
     fields: dict[str, Any],
     er_index: Any,
-) -> str | None:
-    """Exact match against the ER index snapshot using deterministic columns.
+) -> list[str]:
+    """Return all GR ids matched by deterministic columns (may be >1 on index conflict)."""
+    from nexus_spark_lib.transform.stage2_resolve.er_outcomes import pick_signal_a_match
 
-    Args:
-        tenant_id:       Tenant scope.
-        cdm_entity_type: e.g. "contact", "account".
-        fields:          Normalised field dict from Stage 1.
-        er_index:        ErIndexBroadcast (broadcast value, not the wrapper).
-
-    Returns:
-        cdm_entity_id if deterministic match found, else None.
-    """
     det_columns: list[str] = _get_deterministic_columns(er_index, tenant_id, cdm_entity_type)
+    matches: list[str] = []
 
     for col in det_columns:
         raw_value = fields.get(col, {})
@@ -54,11 +47,30 @@ def run_signal_a(
 
         for lookup_key in (hashed_lookup_key, legacy_lookup_key):
             cdm_entity_id = er_index.snapshot.get(lookup_key)
-            if cdm_entity_id:
+            if cdm_entity_id and str(cdm_entity_id) not in matches:
+                matches.append(str(cdm_entity_id))
                 logger.debug("Signal A match: %s=%s → %s", col, value, cdm_entity_id)
-                return cdm_entity_id
 
-    return None
+    if len(matches) > 1:
+        logger.warning(
+            "Signal A multiple GRs for deterministic match tenant=%s type=%s: %s",
+            tenant_id,
+            cdm_entity_type,
+            matches,
+        )
+    winner = pick_signal_a_match(matches)
+    return [winner] if winner else []
+
+
+def run_signal_a(
+    tenant_id: str,
+    cdm_entity_type: str,
+    fields: dict[str, Any],
+    er_index: Any,
+) -> str | None:
+    """Exact match against the ER index snapshot using deterministic columns."""
+    matches = run_signal_a_collect_matches(tenant_id, cdm_entity_type, fields, er_index)
+    return matches[0] if matches else None
 
 
 def _get_deterministic_columns(er_index: Any, tenant_id: str, cdm_entity_type: str) -> list[str]:

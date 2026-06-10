@@ -63,6 +63,7 @@ class NormalisedRecord:
     source_op: str = "INSERT"
     cdm_entity_id: str = ""
     er_confidence: float = 0.0
+    changed_canonical_attributes_json: str = "[]"
 
 
 @dataclass
@@ -245,11 +246,48 @@ def _synthesise_record(
 
     existing_provenance = _coerce_provenance_map(ctx.provenance.get_all(cdm_entity_id))
     rules = _get_rules_map(ctx.survivorship_rules, record.tenant_id, record.cdm_entity_type)
+    changed_scope = parse_changed_canonical_attributes(
+        record.source_op,
+        record.changed_canonical_attributes_json,
+    )
+
+    if changed_scope is not None and not changed_scope:
+        previous_hash = _get_previous_hash(ctx, cdm_entity_id)
+        attribute_provenance = {
+            attr_name: f"{row.winning_connector_id}:{row.winning_record_id}"
+            for attr_name, row in sorted(existing_provenance.items())
+        }
+        return SynthesisResult(
+            cdm_entity_id=cdm_entity_id,
+            rows_to_upsert=[],
+            rows_to_delete=[],
+            provenance_hash=previous_hash,
+            hash_changed=False,
+            contributing_sources=sorted({row.winning_connector_id for row in existing_provenance.values()}),
+            attribute_provenance=attribute_provenance,
+        )
+
+    if changed_scope is not None:
+        attribute_names = changed_scope
+    else:
+        attribute_names = list(record.canonical_fields.keys())
 
     provenance_changes: list[ProvenanceChange] = []
-    for attr_name, raw_attr_value in record.canonical_fields.items():
+    rows_to_delete: list[tuple[str, str, str]] = []
+    for attr_name in attribute_names:
+        raw_attr_value = record.canonical_fields.get(attr_name)
         attr_value = _extract_field_value(raw_attr_value)
         if attr_value is None:
+            cleared = _handle_cleared_attribute_on_update(
+                attr_name=attr_name,
+                record=record,
+                existing_provenance=existing_provenance,
+                rules=rules,
+                ctx=ctx,
+            )
+            if cleared is not None:
+                provenance_changes.extend(cleared.changes)
+                rows_to_delete.extend(cleared.rows_to_delete)
             continue
 
         rule = rules.get(
@@ -273,7 +311,7 @@ def _synthesise_record(
         if change is not None:
             provenance_changes.append(change)
 
-    actually_changed = False
+    actually_changed = bool(rows_to_delete)
     for change in provenance_changes:
         written = _upsert_provenance_row(change.row, ctx)
         if written:
@@ -283,6 +321,8 @@ def _synthesise_record(
     for change in provenance_changes:
         if change.changed:
             updated_provenance[change.row.attribute_name] = change.row
+    for _entity_id, attr_name, _connector_id in rows_to_delete:
+        updated_provenance.pop(attr_name, None)
 
     previous_hash = _get_previous_hash(ctx, cdm_entity_id)
     if actually_changed or resolution.is_new_entity:
@@ -303,11 +343,101 @@ def _synthesise_record(
     return SynthesisResult(
         cdm_entity_id=cdm_entity_id,
         rows_to_upsert=[change.row for change in provenance_changes if change.changed],
-        rows_to_delete=[],
+        rows_to_delete=rows_to_delete,
         provenance_hash=new_hash,
         hash_changed=hash_changed,
         contributing_sources=contributing_sources,
         attribute_provenance=attribute_provenance,
+    )
+
+
+@dataclass
+class _ClearedAttributeOutcome:
+    changes: list[ProvenanceChange]
+    rows_to_delete: list[tuple[str, str, str]]
+
+
+def parse_changed_canonical_attributes(
+    source_op: str,
+    changed_canonical_attributes_json: str = "[]",
+) -> list[str] | None:
+    """Return changed attribute names for UPDATE, or None for full synthesis."""
+    if str(source_op or "").upper() != "UPDATE":
+        return None
+    try:
+        changed = json.loads(changed_canonical_attributes_json or "[]")
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(changed, list):
+        return []
+    return [str(attr_name) for attr_name in changed if attr_name]
+
+
+def _handle_cleared_attribute_on_update(
+    *,
+    attr_name: str,
+    record: NormalisedRecord,
+    existing_provenance: dict[str, ProvenanceRow],
+    rules: dict[str, SurvivorshipRule],
+    ctx: SynthesisContext,
+) -> _ClearedAttributeOutcome | None:
+    """When an UPDATE clears a value, unwind winner provenance and re-elect."""
+    existing = existing_provenance.get(attr_name)
+    if existing is None:
+        return None
+    if (
+        existing.winning_connector_id != record.connector_id
+        or existing.winning_record_id != record.source_record_id
+    ):
+        return None
+
+    ctx.provenance.delete_attribute(
+        cdm_entity_id=record.cdm_entity_id,
+        attribute_name=attr_name,
+        connector_id=record.connector_id,
+        source_record_id=record.source_record_id,
+    )
+
+    remaining_sources = [
+        _coerce_er_index_entry(source)
+        for source in ctx.er_index.get_all_for_entity(record.cdm_entity_id)
+        if not (
+            str(source.get("connector_id") or "") == record.connector_id
+            and str(source.get("source_table") or "") == record.source_table
+            and str(source.get("source_record_id") or "") == record.source_record_id
+        )
+    ]
+    rule = rules.get(
+        attr_name,
+        SurvivorshipRule(
+            tenant_id=record.tenant_id,
+            cdm_entity_type=record.cdm_entity_type,
+            attribute_name=attr_name,
+            rule_type=SurvivorshipRuleType.MOST_RECENT,
+        ),
+    )
+    new_winner = _re_elect_winner(
+        cdm_entity_id=record.cdm_entity_id,
+        attr_name=attr_name,
+        remaining_sources=remaining_sources,
+        rule=rule,
+        ctx=ctx,
+    )
+    if new_winner is not None:
+        return _ClearedAttributeOutcome(
+            changes=[ProvenanceChange(action="update", row=new_winner, changed=True)],
+            rows_to_delete=[],
+        )
+
+    return _ClearedAttributeOutcome(
+        changes=[],
+        rows_to_delete=[
+            (
+                record.cdm_entity_id,
+                attr_name,
+                existing.winning_connector_id,
+            )
+        ],
     )
 
 

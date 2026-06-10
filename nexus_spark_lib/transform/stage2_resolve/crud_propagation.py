@@ -112,6 +112,53 @@ async def propagate_delete(
     return ErOperation.UPSERT, cdm_entity_id
 
 
+async def propagate_resolution_split(
+    conn: asyncpg.Connection,
+    tenant_id: str,
+    cdm_entity_type: str,
+    connector_id: str,
+    source_system: str,
+    source_table: str,
+    source_record_id: str,
+    blocking_key: str,
+    *,
+    prior_cdm_entity_id: str,
+    new_cdm_entity_id: str,
+    confidence: float = 1.0,
+    provisional: bool = False,
+    resolution_method: str = ResolutionMethod.PROBABILISTIC.value,
+) -> ErOperation:
+    """UPDATE re-ER landed on a different GR — migrate source association (spec §7.2)."""
+    await delete_provenance_for_source(
+        conn,
+        prior_cdm_entity_id,
+        tenant_id,
+        connector_id,
+        source_record_id,
+    )
+
+    sm = GoldenRecordStateMachine(conn, tenant_id)
+    still_has_sources = await has_any_provenance(conn, prior_cdm_entity_id, tenant_id)
+    if not still_has_sources:
+        await sm.tombstone(prior_cdm_entity_id, cdm_entity_type)
+
+    await propagate_insert(
+        conn,
+        tenant_id,
+        new_cdm_entity_id,
+        cdm_entity_type,
+        connector_id,
+        source_system,
+        source_table,
+        source_record_id,
+        blocking_key,
+        confidence=confidence,
+        provisional=provisional,
+        resolution_method=resolution_method,
+    )
+    return ErOperation.UPSERT
+
+
 async def propagate_merge(
     conn: asyncpg.Connection,
     tenant_id: str,
