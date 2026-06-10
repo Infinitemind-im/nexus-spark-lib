@@ -209,8 +209,7 @@ async def upsert_batch(
                 confidence         = EXCLUDED.confidence,
                 resolution_method  = EXCLUDED.resolution_method,
                 resolved_at        = NOW(),
-                provisional        = EXCLUDED.provisional,
-                source_system      = EXCLUDED.source_system
+                provisional        = EXCLUDED.provisional
             """,
             [
                 (e[5], e[0], e[1], e[2], e[3], e[4], e[6], e[7], e[8], e[9])
