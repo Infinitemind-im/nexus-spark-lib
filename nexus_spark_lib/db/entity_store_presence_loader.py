@@ -65,5 +65,8 @@ def lookup_entity_store_state(
     snapshot: dict[tuple[str, str], EntityStoreState],
     tenant_id: str,
     cdm_entity_id: str,
-) -> EntityStoreState:
-    return snapshot.get((tenant_id, cdm_entity_id), EntityStoreState.COLD)
+) -> EntityStoreState | None:
+    # Missing presence means this entity has not been materialized yet. The
+    # streaming runtime must keep the Stage 0 decision for first-time entities
+    # instead of forcing them into cold/register-only.
+    return snapshot.get((tenant_id, cdm_entity_id))

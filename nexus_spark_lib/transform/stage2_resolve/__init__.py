@@ -385,7 +385,7 @@ def resolve(
 
         def _presence_udf(tenant_id: str, cdm_entity_id: str) -> str:
             state = lookup_entity_store_state(presence_snapshot, tenant_id, cdm_entity_id)
-            return state.value
+            return state.value if state is not None else None
 
         presence_udf = F.udf(_presence_udf, StringType())
         result = result.withColumn(

@@ -308,3 +308,54 @@ def test_resolve_uses_configured_thresholds_for_auto_apply(
     assert row["er_resolution_method"] == "spark_probabilistic"
     assert row["cdm_entity_id"] == "gr:candidate-001"
     assert row["is_provisional"] is False
+
+
+def test_resolve_preserves_stage0_materialization_when_presence_row_is_missing(
+    spark,
+    mock_er_index_broadcast,
+):
+    from nexus_spark_lib.transform.stage2_resolve import resolve
+
+    schema = StructType([
+        StructField("tenant_id", StringType(), False),
+        StructField("connector_id", StringType(), False),
+        StructField("source_system", StringType(), False),
+        StructField("source_table", StringType(), False),
+        StructField("source_record_id", StringType(), False),
+        StructField("source_op", StringType(), False),
+        StructField("normalised_json", StringType(), False),
+        StructField("changed_canonical_attributes_json", StringType(), False),
+        StructField("materialization_level", StringType(), False),
+        StructField("cdm_entity_type", StringType(), False),
+        StructField("blocking_key", StringType(), False),
+    ])
+
+    df = spark.createDataFrame([
+        (
+            "tenant_acme",
+            "conn_aw",
+            "AW Sales",
+            "salesorderdetail",
+            "89",
+            "INSERT",
+            json.dumps({"amount": {"value": "10.00"}}),
+            "[]",
+            "hot",
+            "transaction",
+            "bk-sales-89",
+        )
+    ], schema=schema)
+
+    class _FakePresenceBroadcast:
+        value = {}
+
+    result = resolve(
+        df,
+        mock_er_index_broadcast,
+        entity_store_presence_broadcast=_FakePresenceBroadcast(),
+    )
+    row = result.collect()[0]
+
+    assert row["entity_store_materialization"] is None
+    assert row["effective_materialization_level"] == "hot"
+    assert row["er_publish_to_m3"] is True
