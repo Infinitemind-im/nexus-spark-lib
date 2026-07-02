@@ -13,7 +13,7 @@ authors = [{ name = "Mentis Consulting", email = "platform@mentis.io" }]
 
 dependencies = [
     # Shared NEXUS foundation — Kafka, DB, tenant context, CDM entities
-    "nexus-core[kafka] @ git+https://github.com/Infinitemind-im/nexus-core-v2.git@main",
+    "nexus-core[kafka] @ git+https://github.com/Infinitemind-im/nexus-core-v2.git@45535af11f1ca9f256e4c6d0a166b09760c62d10",
     # Spark runtime — pin minor, allow patches
     "pyspark>=3.5,<4.0",
     # Graph store — Signal C entity resolution
