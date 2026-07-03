@@ -198,12 +198,13 @@ async def upsert_batch(
             f"""
             INSERT INTO {_TABLE}
                 (cdm_entity_id, tenant_id, connector_id, source_system,
-                 source_table, source_record_id, cdm_entity_type, confidence,
-                 resolution_method, resolved_at, provisional)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10)
+                 entity_type, source_table, source_record_id, cdm_entity_type,
+                 confidence, resolution_method, resolved_at, provisional)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11)
             ON CONFLICT (tenant_id, connector_id, source_table, source_record_id)
             DO UPDATE SET
                 cdm_entity_id      = EXCLUDED.cdm_entity_id,
+                entity_type        = EXCLUDED.entity_type,
                 cdm_entity_type    = EXCLUDED.cdm_entity_type,
                 source_system      = EXCLUDED.source_system,
                 confidence         = EXCLUDED.confidence,
@@ -212,7 +213,19 @@ async def upsert_batch(
                 provisional        = EXCLUDED.provisional
             """,
             [
-                (e[5], e[0], e[1], e[2], e[3], e[4], e[6], e[7], e[8], e[9])
+                (
+                    e[5],
+                    e[0],
+                    e[1],
+                    e[2],
+                    e[6],
+                    e[3],
+                    e[4],
+                    e[6],
+                    e[7],
+                    e[8],
+                    e[9],
+                )
                 for e in entries
             ],
         )
