@@ -76,14 +76,30 @@ def attach_transform_envelope(df: DataFrame) -> DataFrame:
                 norm = json.loads(normalised_json)
                 if isinstance(norm, dict):
                     for name, raw in norm.items():
-                        val = raw.get("value") if isinstance(raw, dict) else raw
-                        fields_payload.append(
-                            {
+                        if isinstance(raw, dict):
+                            entry: dict[str, Any] = {
                                 "attribute_name": name,
-                                "value": val,
+                                "value": raw.get("value"),
                                 "quality": "good",
                             }
-                        )
+                            # Spec: Stage 2 ER pre-resolves FK targets
+                            if raw.get("resolved_cdm_entity_id") is not None:
+                                entry["resolved_cdm_entity_id"] = raw.get("resolved_cdm_entity_id")
+                            elif "resolved_cdm_entity_id" in raw:
+                                entry["resolved_cdm_entity_id"] = None
+                            if raw.get("attribute_kind"):
+                                entry["attribute_kind"] = raw.get("attribute_kind")
+                            if raw.get("fk_target_entity_type"):
+                                entry["fk_target_entity_type"] = raw.get("fk_target_entity_type")
+                            fields_payload.append(entry)
+                        else:
+                            fields_payload.append(
+                                {
+                                    "attribute_name": name,
+                                    "value": raw,
+                                    "quality": "good",
+                                }
+                            )
             except json.JSONDecodeError:
                 pass
 

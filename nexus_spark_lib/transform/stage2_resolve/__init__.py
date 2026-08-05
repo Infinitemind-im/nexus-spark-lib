@@ -28,6 +28,7 @@ from nexus_spark_lib._internal.hash_utils import (
     er_source_lookup_key,
 )
 from nexus_spark_lib.db.entity_store_presence_loader import lookup_entity_store_state
+from nexus_spark_lib.transform.fk_target_resolution import enrich_normalised_json_fk_targets
 from nexus_spark_lib.models.entity_store_presence import EntityStoreState
 from nexus_spark_lib.models.er_types import ResolutionMethod
 from nexus_spark_lib.observability.structured_log import get_stage_logger
@@ -418,6 +419,27 @@ def resolve(
             F.lower(F.coalesce(F.col("materialization_level"), F.lit("warm")))
             != F.lit(EntityStoreState.COLD.value),
         )
+
+    # Spec DataPaths / M3WriterRouting: materialise resolved_cdm_entity_id on FK
+    # fields against entity_resolution_index (Stage 2 ER), so Mapper/M3 receive
+    # pre-resolved edge targets.
+    def _enrich_fk_udf(tenant_id: str, source_system: str, normalised_json: str) -> str:
+        return enrich_normalised_json_fk_targets(
+            normalised_json,
+            tenant_id=tenant_id or "",
+            source_system=source_system or "",
+            er_index=er_index_broadcast.value,
+        )
+
+    enrich_fk_udf = F.udf(_enrich_fk_udf, StringType())
+    result = result.withColumn(
+        "normalised_json",
+        enrich_fk_udf(
+            F.col("tenant_id"),
+            F.coalesce(F.col("source_system"), F.col("connector_id"), F.lit("")),
+            F.col("normalised_json"),
+        ),
+    )
 
     return result
 
