@@ -185,8 +185,13 @@ def _normalise_row(
         def _normalise_payload(payload: dict[str, Any]) -> tuple[dict[str, dict], dict[str, Any]]:
             normalised_fields: dict[str, dict] = {}
             source_extras: dict[str, Any] = {}
+            selected_priorities: dict[str, tuple[int, float, int]] = {}
 
-            for raw_key, raw_value in payload.items():
+            # MapType iteration order is not part of the contract. Sorting also
+            # gives exact-priority ties a stable, readable winner.
+            for raw_key, raw_value in sorted(
+                payload.items(), key=lambda item: str(item[0])
+            ):
                 cdm_attr = field_map.get(raw_key)
                 field_meta = field_map.get(f"__meta__{raw_key}", {})
 
@@ -218,7 +223,15 @@ def _normalise_row(
                 if fk_target_entity_type:
                     normalised_entry["fk_target_entity_type"] = fk_target_entity_type
 
-                normalised_fields[cdm_attr] = normalised_entry
+                candidate_priority = _mapping_selection_priority(
+                    source_attribute=raw_key,
+                    cdm_attribute=cdm_attr,
+                    field_meta=field_meta,
+                )
+                current_priority = selected_priorities.get(cdm_attr)
+                if current_priority is None or candidate_priority > current_priority:
+                    normalised_fields[cdm_attr] = normalised_entry
+                    selected_priorities[cdm_attr] = candidate_priority
 
             return normalised_fields, source_extras
 
@@ -266,6 +279,46 @@ def _normalise_row(
         )
 
     return _fn
+
+
+def _mapping_selection_priority(
+    *,
+    source_attribute: str,
+    cdm_attribute: str,
+    field_meta: dict[str, Any],
+) -> tuple[int, float, int]:
+    """Choose one deterministic source when mappings converge on one CDM field.
+
+    Mapping proposals can legitimately contain several source candidates for a
+    canonical attribute.  The old last-write-wins behaviour made the selected
+    value depend on payload iteration order and could overwrite a declared
+    primary key with an unrelated foreign key.  Primary-key designation is the
+    strongest signal, followed by proposal confidence and name affinity.
+    """
+
+    try:
+        confidence = float(field_meta.get("mapping_confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    source_name = _blocking_attribute_basename(source_attribute)
+    cdm_name = _blocking_attribute_basename(cdm_attribute)
+    if source_name == cdm_name:
+        affinity = 3
+    elif source_name and cdm_name and (
+        source_name.endswith(cdm_name) or cdm_name.endswith(source_name)
+    ):
+        affinity = 2
+    else:
+        source_tokens = {part for part in source_name.split("_") if part}
+        cdm_tokens = {part for part in cdm_name.split("_") if part}
+        affinity = 1 if source_tokens & cdm_tokens else 0
+
+    return (
+        1 if bool(field_meta.get("primary_key")) else 0,
+        confidence,
+        affinity,
+    )
 
 
 # ---------------------------------------------------------------------------

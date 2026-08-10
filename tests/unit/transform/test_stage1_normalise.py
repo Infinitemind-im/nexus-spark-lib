@@ -316,3 +316,64 @@ class TestStage1NormaliseIntegration:
 
         row = normalise(df, broadcast, mock_fx_rates_broadcast).collect()[0]
         assert row["blocking_key"] == blocking_key_hash("tenant_acme", "transaction", "opp-001")
+
+    def test_normalise_primary_key_wins_when_multiple_sources_map_to_same_cdm_field(
+        self,
+        spark,
+        mock_fx_rates_broadcast,
+    ):
+        from datetime import datetime
+
+        from nexus_spark_lib._internal.hash_utils import blocking_key_hash
+        from nexus_spark_lib.transform.stage1_normalise import normalise
+
+        mapping = MagicMock()
+        mapping.get_field_map.return_value = {
+            "id": "product_id",
+            "uom_id": "product_id",
+            "__meta__id": {
+                "primary_key": True,
+                "mapping_confidence": 0.93,
+            },
+            "__meta__uom_id": {
+                "primary_key": False,
+                "mapping_confidence": 0.99,
+            },
+        }
+        broadcast = MagicMock()
+        broadcast.value = mapping
+
+        schema = StructType([
+            StructField("tenant_id", StringType(), False),
+            StructField("connector_id", StringType(), False),
+            StructField("source_table", StringType(), False),
+            StructField("cdm_entity_type", StringType(), False),
+            StructField("materialization_level", StringType(), False),
+            StructField("source_record_id", StringType(), False),
+            StructField("source_op", StringType(), False),
+            StructField("source_ts", TimestampType(), True),
+            StructField("after_payload", MapType(StringType(), StringType()), True),
+            StructField("before_payload", MapType(StringType(), StringType()), True),
+        ])
+        df = spark.createDataFrame(
+            [(
+                "tenant_acme",
+                "odoo-prod",
+                "product.product",
+                "product",
+                "hot",
+                "17",
+                "INSERT",
+                datetime(2026, 8, 10),
+                {"uom_id": "[110, 'MAD']", "id": "17"},
+                None,
+            )],
+            schema=schema,
+        )
+
+        row = normalise(df, broadcast, mock_fx_rates_broadcast).collect()[0]
+        normalised = json.loads(row["normalised_json"])
+
+        assert normalised["product_id"]["value"] == "17"
+        assert normalised["product_id"]["source_attribute"] == "id"
+        assert row["blocking_key"] == blocking_key_hash("tenant_acme", "product", "17")
