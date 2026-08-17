@@ -31,6 +31,7 @@ NOT in scope (belongs to nexus-spark-transformer before calling this lib):
 
 from __future__ import annotations
 
+import ast
 import json
 from typing import Any
 
@@ -185,7 +186,7 @@ def _normalise_row(
         def _normalise_payload(payload: dict[str, Any]) -> tuple[dict[str, dict], dict[str, Any]]:
             normalised_fields: dict[str, dict] = {}
             source_extras: dict[str, Any] = {}
-            selected_priorities: dict[str, tuple[int, float, int]] = {}
+            selected_priorities: dict[str, tuple[int, int, int, float, int]] = {}
 
             # MapType iteration order is not part of the contract. Sorting also
             # gives exact-priority ties a stable, readable winner.
@@ -199,7 +200,12 @@ def _normalise_row(
                     source_extras[raw_key] = strip_null_like(raw_value)
                     continue
 
-                coerced = coerce_value(raw_value, field_meta)
+                prepared_value = normalise_mapped_source_value(
+                    raw_value,
+                    cdm_attribute=str(cdm_attr),
+                    field_meta=field_meta,
+                )
+                coerced = coerce_value(prepared_value, field_meta)
                 value, quality = _apply_fx_if_monetary(
                     raw_value=coerced,
                     field_meta=field_meta,
@@ -222,6 +228,10 @@ def _normalise_row(
                 fk_target_entity_type = str(field_meta.get("fk_target_entity_type") or "").strip()
                 if fk_target_entity_type:
                     normalised_entry["fk_target_entity_type"] = fk_target_entity_type
+
+                fk_target_source_table = str(field_meta.get("fk_target_source_table") or "").strip()
+                if fk_target_source_table:
+                    normalised_entry["fk_target_source_table"] = fk_target_source_table
 
                 candidate_priority = _mapping_selection_priority(
                     source_attribute=raw_key,
@@ -286,7 +296,7 @@ def _mapping_selection_priority(
     source_attribute: str,
     cdm_attribute: str,
     field_meta: dict[str, Any],
-) -> tuple[int, float, int]:
+) -> tuple[int, int, int, float, int]:
     """Choose one deterministic source when mappings converge on one CDM field.
 
     Mapping proposals can legitimately contain several source candidates for a
@@ -314,7 +324,15 @@ def _mapping_selection_priority(
         cdm_tokens = {part for part in cdm_name.split("_") if part}
         affinity = 1 if source_tokens & cdm_tokens else 0
 
+    raw_priority = field_meta.get("mapping_priority")
+    try:
+        explicit_priority = int(raw_priority) if raw_priority is not None else 0
+    except (TypeError, ValueError):
+        explicit_priority = 0
+
     return (
+        1 if raw_priority is not None else 0,
+        explicit_priority,
         1 if bool(field_meta.get("primary_key")) else 0,
         confidence,
         affinity,
@@ -623,7 +641,47 @@ def strip_null_like(value: Any) -> Any:
     if not isinstance(value, str):
         return value
     stripped = value.strip()
-    return None if stripped.lower() in ("", "null", "none", "n/a", "na", "nan", "-") else stripped
+    return None if stripped.lower() in (
+        "", "null", "none", "n/a", "na", "nan", "-", "[]"
+    ) else stripped
+
+
+def _odoo_relation_id(value: Any) -> Any:
+    """Extract an Odoo Many2one id while preserving scalar foreign keys."""
+    parsed = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped == "[]":
+            return None
+        if stripped.startswith("[") and stripped.endswith("]"):
+            try:
+                parsed = json.loads(stripped)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                try:
+                    parsed = ast.literal_eval(stripped)
+                except (SyntaxError, ValueError):
+                    return value
+    if isinstance(parsed, (list, tuple)):
+        return parsed[0] if parsed else None
+    return parsed
+
+
+def normalise_mapped_source_value(
+    raw_value: Any,
+    *,
+    cdm_attribute: str,
+    field_meta: dict[str, Any],
+) -> Any:
+    """Apply mapping-aware cleanup without mutating the source payload."""
+    attribute_kind = str(field_meta.get("attribute_kind") or "").strip().lower()
+    if attribute_kind in {"foreign_key", "edge_key", "many2one"}:
+        return _odoo_relation_id(raw_value)
+
+    canonical_name = _blocking_attribute_basename(cdm_attribute)
+    if canonical_name in {"description", "product_description"}:
+        if raw_value in (0, 0.0) or str(raw_value).strip() == "0.0":
+            return None
+    return raw_value
 
 
 def canonicalise_timestamp(raw_value: Any) -> Any:
