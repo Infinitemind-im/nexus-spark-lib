@@ -1,0 +1,24 @@
+name: Tenant GUC Guard
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  reject-legacy-tenant-gucs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Reject legacy tenant GUC names
+        shell: bash
+        run: |
+          if git grep -n -E 'app[.]current_tenant|app[.]tenant_id|nexus[.]tenant_id' -- '*.py' '*.sql'; then
+            echo 'Legacy tenant GUC name found; use nexus.current_tenant_id.'
+            exit 1
+          fi
+

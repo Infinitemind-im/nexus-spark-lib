@@ -47,7 +47,7 @@ def stage_span(
     """
     tracer = get_tracer()
     with tracer.start_as_current_span(stage_name) as span:
-        span.set_attribute("nexus.tenant_id", tenant_id)
+        span.set_attribute("nexus.current_tenant_id", tenant_id)
         if trace_id:
             span.set_attribute("nexus.trace_id", trace_id)
         span.set_attribute("nexus.stage", stage_name)
