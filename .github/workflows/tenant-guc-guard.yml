@@ -3,6 +3,7 @@ name: Tenant GUC Guard
 on:
   pull_request:
   push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -17,8 +18,26 @@ jobs:
       - name: Reject legacy tenant GUC names
         shell: bash
         run: |
-          if git grep -n -E 'app[.]current_tenant|app[.]tenant_id|nexus[.]tenant_id' -- '*.py' '*.sql'; then
+          # app.current_tenant / app.tenant_id are only ever GUCs, so they are
+          # matched bare. nexus.tenant_id is NOT: it is also a valid
+          # OpenTelemetry span attribute and a valid dict/YAML key. Matching it
+          # bare made a PR rename a live telemetry field that every Tempo and
+          # Grafana query filters on (nexus-spark-lib#1). It is a mistyped GUC
+          # only in GUC syntax, so it is matched only there.
+          set +e
+          matches="$(git grep -n -E 'app[.]current_tenant|app[.]tenant_id|(set_config|current_setting)\([^)]*nexus[.]tenant_id|SET[[:space:]]+nexus[.]tenant_id|nexus[.]tenant_id[[:space:]]*=' -- \
+            '*.py' '*.sql' '*.sh' '*.md' '*.yml' '*.yaml' \
+            ':(exclude).github/workflows/tenant-guc-guard.yml' \
+            2>&1)"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            printf '%s\n' "$matches"
             echo 'Legacy tenant GUC name found; use nexus.current_tenant_id.'
             exit 1
           fi
-
+          if [ "$rc" -ne 1 ]; then
+            printf '%s\n' "$matches"
+            echo "Tenant GUC guard failed to scan the checkout (git grep rc=$rc)."
+            exit "$rc"
+          fi
