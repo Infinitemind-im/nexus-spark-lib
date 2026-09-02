@@ -11,7 +11,7 @@ Never call pool.acquire() directly. Always use:
         ...
 This is re-exported from nexus_spark_lib.db for convenience.
 nexus_core's implementation sanitises tenant_id against SQL injection and
-resets app.current_tenant in the finally block.
+resets nexus.current_tenant_id in the finally block.
 """
 
 from __future__ import annotations
