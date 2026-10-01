@@ -14,6 +14,19 @@ class ERLookupClient:
         self.redis = redis
         self.postgres = postgres
 
+    def prewarm_entity_type(self, tenant_id: str, entity_type: str) -> dict[str, int]:
+        if not tenant_id or not entity_type:
+            raise ValueError('tenant and entity type are required')
+        with self.postgres.transaction():
+            self.postgres.execute("SELECT set_config('nexus.current_tenant_id', %s, true)", (tenant_id,))
+            connectors = self.postgres.execute(
+                "SELECT DISTINCT connector_id::text FROM nexus_system.entity_resolution_index "
+                "WHERE tenant_id = %s AND cdm_entity_type = %s AND COALESCE(is_active, true) "
+                "AND connector_id IS NOT NULL", (tenant_id, entity_type),
+            ).fetchall()
+            total = sum(self.prewarm(tenant_id, connector_id) for (connector_id,) in connectors)
+            return {'prewarmed_count': total, 'connector_count': len(connectors)}
+
     def prewarm(self, tenant_id: str, connector_id: str, *, batch_size: int = 1000) -> int:
         if not tenant_id or not connector_id or batch_size < 1:
             raise ValueError('tenant, connector and a positive batch size are required')
