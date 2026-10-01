@@ -39,9 +39,9 @@ def test_fifty_thousand_keys_are_ready_before_batch_and_other_tenants_are_absent
                 time.sleep(.25)
         connector=str(uuid.uuid4())
         with conn:
-            conn.execute('CREATE SCHEMA nexus_system; CREATE TABLE nexus_system.entity_resolution_index (tenant_id text,connector_id uuid,source_table text,source_record_id text,cdm_entity_id text,is_active boolean)')
-            conn.execute("INSERT INTO nexus_system.entity_resolution_index SELECT 'fixture',%s::uuid,'accounts',i::text,'entity-'||i,true FROM generate_series(1,50000) i",(connector,))
-            conn.execute("INSERT INTO nexus_system.entity_resolution_index VALUES ('other',%s,'accounts','private','private-entity',true),('fixture',%s,'accounts','inactive','inactive-entity',false)",(connector,connector))
+            conn.execute('CREATE SCHEMA nexus_system; CREATE TABLE nexus_system.entity_resolution_index (tenant_id text,connector_id uuid,source_table text,source_record_id text,cdm_entity_id text,is_active boolean,cdm_entity_type text)')
+            conn.execute("INSERT INTO nexus_system.entity_resolution_index SELECT 'fixture',%s::uuid,'accounts',i::text,'entity-'||i,true,'account' FROM generate_series(1,50000) i",(connector,))
+            conn.execute("INSERT INTO nexus_system.entity_resolution_index VALUES ('other',%s,'accounts','private','private-entity',true,'account'),('fixture',%s,'accounts','inactive','inactive-entity',false,'account')",(connector,connector))
             conn.commit()
             count=ERLookupClient(redis=client,postgres=conn).prewarm('fixture',connector)
             assert count==50000 and client.dbsize()==50000
@@ -49,4 +49,7 @@ def test_fifty_thousand_keys_are_ready_before_batch_and_other_tenants_are_absent
             assert 3500 <= client.ttl(f'er:fixture:{connector}:1') <= 3600
             assert client.get(f'er:other:{connector}:private') is None
             assert client.get(f'er:fixture:{connector}:inactive') is None
+            er=ERLookupClient(redis=client,postgres=conn)
+            assert er.prewarm_entity_type('fixture','account') == {'prewarmed_count':50000,'connector_count':1}
+            assert er.prewarm_entity_type('fixture','unknown') == {'prewarmed_count':0,'connector_count':0}
             print(f'NEXUS_ER_PREWARM_FIXTURE_COUNT={count}')
