@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nexus-spark-lib"
-version = "0.1.4"
+version = "0.1.5"
 description = "Shared Spark transformation library for the NEXUS platform pipeline"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,7 +13,7 @@ authors = [{ name = "Mentis Consulting", email = "platform@mentis.io" }]
 
 dependencies = [
     # Shared NEXUS foundation — Kafka, DB, tenant context, CDM entities
-    "nexus-core[kafka] @ git+https://github.com/Infinitemind-im/nexus-core-v2.git@4dfce445b7f87795053a57f941db4262f5c63e9c",
+    "nexus-core[kafka] @ git+https://github.com/Infinitemind-im/nexus-core-v2.git@bc96c64df71854500fe02e8c81f77b8b676120f9",
     # Spark runtime — pin minor, allow patches
     "pyspark>=3.5,<4.0",
     # Graph store — Signal C entity resolution
