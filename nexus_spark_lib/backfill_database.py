@@ -5,7 +5,7 @@ from datetime import timezone
 import psycopg2
 from psycopg2 import sql
 
-from nexus_spark_lib.backfill import _base_payload, _connector_var, _csv, _iso_now, _producer
+from nexus_spark_lib.backfill import _base_payload, _connector_var, _csv, _iso_now, _producer, publish_raw_record
 
 
 def _sources(connector):
@@ -94,7 +94,7 @@ def extract_tables(connector, publish_topic, start_date=None, end_date=None,
                             ts=ts.replace(tzinfo=timezone.utc)
                         payload=_base_payload(connector,connector.source_type,f"{schema}.{table}",
                             str(record[key]),ts.isoformat() if hasattr(ts,"isoformat") else _iso_now(),record,window)
-                        producer.produce(publish_topic,key=str(record[key]).encode(),value=json.dumps(payload,default=str).encode())
+                        publish_raw_record(producer,publish_topic,payload)
                         total+=1
                 producer.flush()
     return {"records_published":total}
