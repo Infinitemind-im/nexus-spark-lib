@@ -17,12 +17,24 @@ Breaking changes require a major version bump and a platform-wide coordination w
 
 __version__ = "0.1.4"
 
-from nexus_spark_lib.transform.stage0_materialization import (
-    materialization_gate,
-    drop_cold,
-    materialization_decide,
-)
-from nexus_spark_lib.transform.stage1_normalise import normalise
+from importlib import import_module
+
+# Capability discovery must not import Spark/Core or the transformation stages.
+# Keep the public names available, loading their owning modules on first access.
+_EXPORTS = {
+    "materialization_gate": "nexus_spark_lib.transform.stage0_materialization",
+    "drop_cold": "nexus_spark_lib.transform.stage0_materialization",
+    "materialization_decide": "nexus_spark_lib.transform.stage0_materialization",
+    "normalise": "nexus_spark_lib.transform.stage1_normalise",
+}
+
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(_EXPORTS[name]), name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     "materialization_gate",

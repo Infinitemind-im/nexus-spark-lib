@@ -14,6 +14,24 @@ import sys
 from nexus_spark_lib.extract_registry import registry
 assert registry.get(' POSTGRESQL ')
 assert not any(name in sys.modules for name in ('nexus_spark_lib.backfill','requests','confluent_kafka','xmlrpc.client'))
+assert not any(name.startswith(('nexus_spark_lib.transform','pyspark','nexus_core')) for name in sys.modules)
+"""], check=True)
+
+
+def test_public_transform_exports_remain_available_lazily():
+    subprocess.run([sys.executable,"-c", """
+import nexus_spark_lib as library
+from types import SimpleNamespace
+sentinel = object()
+library.import_module = lambda name: SimpleNamespace(materialization_gate=sentinel)
+assert library.materialization_gate is sentinel
+assert library.materialization_gate is sentinel
+try:
+    library.unknown_export
+except AttributeError:
+    pass
+else:
+    raise AssertionError('Unknown public API must raise AttributeError')
 """], check=True)
 
 
