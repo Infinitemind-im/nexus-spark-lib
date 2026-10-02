@@ -84,7 +84,11 @@ def _csv(value: str | None) -> list[str]:
 
 
 def _connector_var(connector: Any, suffix: str, default: str | None = None) -> str | None:
-    return _get_var(f"bf__{getattr(connector, 'connector_id', '')}__{suffix}", default)
+    value = _get_var(f"bf__{getattr(connector, 'connector_id', '')}__{suffix}")
+    if value is not None:
+        return value
+    from nexus_spark_lib.backfill_config import registered_value
+    return registered_value(connector, suffix, default)
 
 
 def _flush_or_raise(producer: Producer, timeout: float = 60) -> None:
@@ -773,7 +777,8 @@ def _validate_connector(connector):
     if not connector.tenant_id or not connector.connector_id:
         raise ValueError("Backfill requires a registered tenant and connector")
     with _control_connection(connector.tenant_id) as conn:
-        row = conn.execute("""SELECT lower(COALESCE(connector_type,system_type,source_system))
+        row = conn.execute("""SELECT lower(COALESCE(NULLIF(system_type,''),
+                NULLIF(connector_type,''),source_system))
             FROM nexus_system.connectors WHERE tenant_id=%s AND connector_id::text=%s
             AND enabled AND active""", (connector.tenant_id,connector.connector_id)).fetchone()
     expected = "postgresql" if connector.source_type.lower() == "postgres" else connector.source_type.lower()

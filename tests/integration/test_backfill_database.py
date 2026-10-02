@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import psycopg
+from psycopg.conninfo import conninfo_to_dict
+from psycopg.types.json import Jsonb
 import pytest
 
 from nexus_spark_lib import backfill
@@ -32,7 +34,7 @@ def test_database_backfill_reads_real_rows_without_other_tenant_control_state(mo
         with psycopg.connect(dsn) as conn:
             conn.execute("""CREATE SCHEMA nexus_system;
                 CREATE TABLE nexus_system.connectors (tenant_id text,connector_id uuid,
-                  connector_type text,system_type text,source_system text,enabled bool,active bool);
+                  connector_type text,system_type text,source_system text,enabled bool,active bool,config jsonb);
                 CREATE ROLE bulk_fixture LOGIN PASSWORD 'source-fixture';
                 GRANT USAGE ON SCHEMA nexus_system TO bulk_fixture;
                 GRANT SELECT ON nexus_system.connectors TO bulk_fixture;
@@ -49,10 +51,51 @@ def test_database_backfill_reads_real_rows_without_other_tenant_control_state(mo
                   stopping_date timestamptz,overlap_buffer_days integer);
                 GRANT SELECT ON nexus_system.transaction_backfill_configs TO bulk_fixture;
                 """)
-            conn.execute("INSERT INTO nexus_system.connectors VALUES ('tenant-a',%s,'postgresql',NULL,NULL,true,true)", (connector_id,))
+            conn.execute("INSERT INTO nexus_system.connectors VALUES ('tenant-a',%s,'postgresql',NULL,NULL,true,true,NULL)", (connector_id,))
             conn.execute("INSERT INTO nexus_system.transaction_backfill_configs VALUES (%s,'public.orders','modifieddate','forward','2026-09-01','1 month','fixed_date','2026-10-01',0)", (connector_id,))
         app_dsn=dsn.replace("postgres:source-fixture","bulk_fixture:source-fixture")
         monkeypatch.setenv("CDM_DB_DSN",app_dsn)
+        monkeypatch.setattr(backfill,"_get_var",lambda name,default=None:default)
+        providers={
+            "salesforce": ("rest_api",{"instance_url":"https://fixture.salesforce.test",
+                "client_id":"fixture","client_secret":"fixture","refresh_token":"fixture"}),
+            "servicenow": ("rest_api",{"instance_url":"fixture.service-now.test",
+                "username":"fixture","password":"fixture"}),
+            "odoo": ("xmlrpc",{"url":"https://fixture.odoo.test","database":"fixture",
+                "username":"fixture","api_key":"fixture"}),
+            "postgresql": ("postgresql",{"host":"127.0.0.1","port":port,"database":"postgres",
+                "username":"bulk_fixture","password":"source-fixture"}),
+        }
+        for provider,(transport,credentials) in providers.items():
+            provider_id=str(uuid4())
+            registered=SimpleNamespace(tenant_id="tenant-a",connector_id=provider_id,source_type=provider)
+            with psycopg.connect(dsn) as admin:
+                admin.execute("INSERT INTO nexus_system.connectors VALUES ('tenant-a',%s,%s,%s,NULL,true,true,%s)",
+                    (provider_id,transport,provider,Jsonb({"credentials":credentials})))
+            # Exercise the public runtime path, not only the discovery query.
+            backfill._validate_connector(registered)
+            if provider=="postgresql":
+                source_dsn=backfill._connector_var(registered,"dsn")
+                assert conninfo_to_dict(source_dsn)["user"]=="bulk_fixture"
+                with psycopg.connect(source_dsn) as source:
+                    assert source.execute("SELECT count(*) FROM public.orders").fetchone()[0]==3
+            else:
+                monkeypatch.setenv("SALESFORCE_REFRESH_TOKEN","different-tenant-secret")
+                with backfill.credential_environment(registered):
+                    {"salesforce":backfill._sf_env,"servicenow":backfill._sn_env,"odoo":backfill._odoo_env}[provider]()
+                    if provider!="salesforce":
+                        assert os.environ.get("SALESFORCE_REFRESH_TOKEN") is None
+                assert os.environ["SALESFORCE_REFRESH_TOKEN"]=="different-tenant-secret"
+            with pytest.raises(ValueError,match="another tenant"):
+                backfill._validate_connector(SimpleNamespace(tenant_id="tenant-b",connector_id=provider_id,source_type=provider))
+            with pytest.raises(ValueError,match="active tenant connector"):
+                backfill._connector_var(SimpleNamespace(tenant_id="tenant-b",connector_id=provider_id,source_type=provider),"credentials")
+            with pytest.raises(ValueError,match="changed type"):
+                backfill._validate_connector(SimpleNamespace(tenant_id="tenant-a",connector_id=provider_id,source_type="unknown"))
+            with psycopg.connect(dsn) as admin:
+                admin.execute("UPDATE nexus_system.connectors SET enabled=false WHERE connector_id=%s",(provider_id,))
+            with pytest.raises(ValueError,match="inactive"):
+                backfill._validate_connector(registered)
         values={"dsn":app_dsn,"schemas":"public","initial_tables":"public.orders"}
         monkeypatch.setattr(backfill,"_connector_var",lambda connector,suffix,default=None:values.get(suffix,default))
         producer=SimpleNamespace(events=[])
