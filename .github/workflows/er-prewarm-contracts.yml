@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Infinitemind-im/nexus-core-v2
-          ref: 4dfce445b7f87795053a57f941db4262f5c63e9c
+          ref: bc96c64df71854500fe02e8c81f77b8b676120f9
           path: .runtime-src/nexus-core
           token: ${{ secrets.NEXUS_GITHUB_TOKEN }}
           persist-credentials: false
