@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Infinitemind-im/nexus-core-v2
-          ref: db289f04f7b80d414e8ccb7b3fc93acda3d4b046
+          ref: 4dfce445b7f87795053a57f941db4262f5c63e9c
           path: .runtime-src/nexus-core
           token: ${{ secrets.NEXUS_GITHUB_TOKEN }}
           persist-credentials: false
@@ -30,9 +30,9 @@ jobs:
           echo "${RUNNER_TEMP}/er-prewarm-${GITHUB_RUN_ID}/bin" >> "$GITHUB_PATH"
       - name: Install published library dependencies
         run: |
-          python -m pip install .runtime-src/nexus-core 'pyspark==3.5.0' neo4j jellyfish metaphone pydantic-settings prometheus-client opentelemetry-sdk datasketch asyncpg pytest 'testcontainers==4.15.0' 'redis==5.1.1' 'psycopg[binary]==3.2.3'
+          python -m pip install .runtime-src/nexus-core 'pyspark==3.5.0' neo4j jellyfish metaphone pydantic-settings prometheus-client opentelemetry-sdk datasketch asyncpg pytest 'testcontainers==4.15.0' 'redis==5.1.1' 'psycopg[binary]==3.2.3' 'psycopg2-binary==2.9.10' 'requests==2.32.3' 'confluent-kafka==2.5.3' 'python-dateutil==2.9.0.post0'
           python -m pip install --no-deps .
       - name: Verify real 50000-row ER partition pre-warm
         env:
           RUN_ER_PREWARM_INTEGRATION: '1'
-        run: python -m pytest -q -s tests/unit/test_er_prewarm.py tests/integration/test_er_prewarm_cache.py
+        run: python -m pytest -q -s tests/unit/test_er_prewarm.py tests/integration/test_er_prewarm_cache.py tests/unit/test_backfill_contracts.py tests/integration/test_backfill_database.py
