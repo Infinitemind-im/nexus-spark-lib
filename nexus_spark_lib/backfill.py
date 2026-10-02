@@ -10,6 +10,7 @@ import requests
 from confluent_kafka import Producer  # type: ignore
 from contextlib import contextmanager
 from threading import RLock
+from nexus_spark_lib.extract_registry import ExtractRegistry, registry
 try:
     from airflow.models import Variable  # type: ignore
 except Exception:  # noqa: BLE001
@@ -688,24 +689,6 @@ def _extract_odoo(
             offset += limit
 
 
-class ExtractRegistry:
-    """Iteration-2 local registry; no shared ports distribution is introduced."""
-    def __init__(self):
-        self._implementations = {}
-
-    def register(self, source_type, implementation):
-        key = source_type.strip().lower()
-        if key in self._implementations:
-            raise ValueError("Extractor already registered")
-        self._implementations[key] = implementation
-
-    def get(self, source_type):
-        try:
-            return self._implementations[source_type.strip().lower()]
-        except KeyError as exc:
-            raise ValueError("No bulk extractor is registered for this source type") from exc
-
-
 class ApiExtractor:
     def __init__(self, extract):
         self.extract = extract
@@ -767,14 +750,6 @@ class DatabaseExtractor:
         from nexus_spark_lib.backfill_database import extract_tables
         return extract_tables(connector,publish_topic,start_date,end_date,
             table_name=options.get("table_name"),timestamp_column=options.get("timestamp_column"))
-
-
-registry = ExtractRegistry()
-registry.register("postgres", DatabaseExtractor())
-registry.register("postgresql", DatabaseExtractor())
-registry.register("salesforce", ApiExtractor(_extract_salesforce))
-registry.register("servicenow", ApiExtractor(_extract_servicenow))
-registry.register("odoo", ApiExtractor(_extract_odoo))
 
 
 def run_snapshot_extract(connector, exclude_system_tables, publish_topic):

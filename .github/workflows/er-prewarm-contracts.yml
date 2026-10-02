@@ -35,4 +35,4 @@ jobs:
       - name: Verify real 50000-row ER partition pre-warm
         env:
           RUN_ER_PREWARM_INTEGRATION: '1'
-        run: python -m pytest -q -s tests/unit/test_er_prewarm.py tests/integration/test_er_prewarm_cache.py tests/unit/test_backfill_contracts.py tests/integration/test_backfill_database.py
+        run: python -m pytest -q -s tests/unit/test_er_prewarm.py tests/integration/test_er_prewarm_cache.py tests/unit/test_backfill_contracts.py tests/unit/test_extract_registry.py tests/integration/test_backfill_database.py
