@@ -43,8 +43,14 @@ def test_database_backfill_reads_real_rows_without_other_tenant_control_state(mo
                 CREATE TABLE public.orders (id integer PRIMARY KEY,modifieddate timestamptz,amount integer);
                 INSERT INTO public.orders VALUES (0,'2026-09-01',10),(1,'2026-09-30',20),(2,'2026-10-01',30);
                 GRANT SELECT ON public.orders TO bulk_fixture;
+                CREATE TABLE nexus_system.transaction_backfill_configs (
+                  connector_id text,table_name text,timestamp_column text,fill_direction text,
+                  start_index timestamptz,time_window_length text,stopping_criteria text,
+                  stopping_date timestamptz,overlap_buffer_days integer);
+                GRANT SELECT ON nexus_system.transaction_backfill_configs TO bulk_fixture;
                 """)
             conn.execute("INSERT INTO nexus_system.connectors VALUES ('tenant-a',%s,'postgresql',NULL,NULL,true,true)", (connector_id,))
+            conn.execute("INSERT INTO nexus_system.transaction_backfill_configs VALUES (%s,'public.orders','modifieddate','forward','2026-09-01','1 month','fixed_date','2026-10-01',0)", (connector_id,))
         app_dsn=dsn.replace("postgres:source-fixture","bulk_fixture:source-fixture")
         monkeypatch.setenv("CDM_DB_DSN",app_dsn)
         values={"dsn":app_dsn,"schemas":"public","initial_tables":"public.orders"}
@@ -56,6 +62,10 @@ def test_database_backfill_reads_real_rows_without_other_tenant_control_state(mo
         from nexus_spark_lib import backfill_database
         monkeypatch.setattr(backfill_database,"_producer",lambda:producer)
         connector=SimpleNamespace(connector_id=connector_id,tenant_id="tenant-a",source_type="postgresql")
+        from nexus_spark_lib import backfill_windows
+        monkeypatch.setattr(backfill_windows,"_get_var",lambda key:None)
+        planned=backfill_windows.plan_windows(connector)
+        assert planned[0]["table_name"]=="public.orders" and planned[0]["end"]=="2026-10-01"
         result=backfill.run_windowed_backfill(connector,"2026-09-01","2026-10-01","transactions_only",True,"raw",
             table_name="public.orders",timestamp_column="modifieddate")
         assert result=={"records_published":2}

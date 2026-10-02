@@ -54,12 +54,14 @@ def plan_window(connector_id, cfg, *, today=None):
 
 
 def plan_windows(connector):
+    from nexus_spark_lib.backfill import _validate_connector
+    _validate_connector(connector)
     with _control_connection(connector.tenant_id) as conn:
         with conn.cursor() as cursor:
             cursor.execute("""SELECT table_name,timestamp_column,fill_direction,start_index,
                 time_window_length,stopping_criteria,stopping_date,overlap_buffer_days
                 FROM nexus_system.transaction_backfill_configs
-                WHERE connector_id=%s::uuid ORDER BY table_name""", (connector.connector_id,))
+                WHERE connector_id::text=%s ORDER BY table_name""", (connector.connector_id,))
             names = [column.name for column in cursor.description]
             configs = [dict(zip(names,row)) for row in cursor.fetchall()]
     if not configs:
