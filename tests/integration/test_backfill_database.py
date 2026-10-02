@@ -5,6 +5,7 @@ import subprocess
 import time
 from types import SimpleNamespace
 from uuid import uuid4
+from datetime import datetime, timezone
 
 import psycopg
 from psycopg.conninfo import conninfo_to_dict
@@ -15,7 +16,7 @@ from nexus_spark_lib import backfill
 
 
 @pytest.mark.integration
-def test_database_backfill_reads_real_rows_without_other_tenant_control_state(monkeypatch):
+def test_database_backfill_reads_real_rows_without_other_tenant_control_state(monkeypatch, spark):
     image="pgvector/pgvector@sha256:c3c84b85691a264aa3c5b8fc1d611e67d42b0cca8596e3d3d22dc2424c12c4e2"
     container=subprocess.check_output(["docker","run","--rm","-d","-p","127.0.0.1::5432",
         "-e","POSTGRES_PASSWORD=source-fixture",image],text=True).strip()
@@ -113,7 +114,18 @@ def test_database_backfill_reads_real_rows_without_other_tenant_control_state(mo
             table_name="public.orders",timestamp_column="modifieddate")
         assert result=={"records_published":2}
         assert [event["source_record_id"] for event in producer.events]==["0","1"]
-        assert all(event["tenant_id"]=="tenant-a" and event["after_payload"]["amount"]>0 for event in producer.events)
+        assert all(event["tenant_id"]=="tenant-a" and event["payload"]["after_payload"]["amount"]>0 for event in producer.events)
+        from nexus_core.messaging import NexusMessage
+        from nexus_spark_lib.kafka.reader import _unpack_nexus_message
+        assert all(NexusMessage.from_kafka_value(json.dumps(event).encode()).permission_scope=={}
+                   for event in producer.events)
+        raw=spark.createDataFrame([(json.dumps(event).encode(),offset,0,datetime.now(timezone.utc))
+            for offset,event in enumerate(producer.events)],['value','offset','partition','timestamp'])
+        consumed=_unpack_nexus_message(raw).orderBy('source_record_id').collect()
+        assert [(r.tenant_id,r.connector_id,r.source_record_id,r.after_payload['amount'])
+                for r in consumed]==[('tenant-a',connector_id,'0','10'),('tenant-a',connector_id,'1','20')]
+        assert all(r.source_table=='public.orders' and r.source_op=='SNAPSHOT_READ' and r.message_id
+                   and r.correlation_id and r.backfill_batch_id for r in consumed)
         with pytest.raises(ValueError,match="belongs to another tenant"):
             backfill.run_snapshot_extract(SimpleNamespace(connector_id=connector_id,tenant_id="tenant-b",source_type="postgresql"),True,"raw")
         assert len(producer.events)==2

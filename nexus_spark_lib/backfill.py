@@ -167,6 +167,19 @@ def _base_payload(
     return payload
 
 
+def publish_raw_record(producer, topic, payload):
+    """Use the Core wire contract consumed by the real Spark raw reader."""
+    from nexus_core.messaging import NexusMessage
+
+    message = NexusMessage(topic=topic, tenant_id=payload["tenant_id"],
+        source_system=payload["source_system"], source_record_id=payload["source_record_id"],
+        payload={key:value for key,value in payload.items()
+                 if key not in ("tenant_id","source_system","source_record_id")},
+        permission_scope={}, event_action="read",
+        correlation_id=payload["backfill_batch_id"])
+    producer.produce(topic, key=message.tenant_id.encode(), value=message.to_json())
+
+
 def _sf_env() -> tuple[str, str, str, str, str | None, str | None, str | None]:
     login_base = os.getenv("SALESFORCE_LOGIN_URL") or os.getenv("SALESFORCE_INSTANCE_URL")
     api_base = os.getenv("SALESFORCE_INSTANCE_URL") or login_base
@@ -374,7 +387,7 @@ def _extract_salesforce(
                     after_payload=rec,
                     window=window,
                 )
-                p.produce(publish_topic, value=json.dumps(payload, default=str).encode())
+                publish_raw_record(p,publish_topic,payload)
             _flush_or_raise(p)
             if data.get("done"):
                 break
@@ -558,7 +571,7 @@ def _extract_servicenow(
                     after_payload=rec,
                     window=window,
                 )
-                p.produce(publish_topic, value=json.dumps(payload, default=str).encode())
+                publish_raw_record(p,publish_topic,payload)
             _flush_or_raise(p)
             offset += page_size
 
@@ -688,7 +701,7 @@ def _extract_odoo(
                     after_payload=rec,
                     window=window,
                 )
-                p.produce(publish_topic, value=json.dumps(payload, default=str).encode())
+                publish_raw_record(p,publish_topic,payload)
             p.flush(5)
             offset += limit
 
