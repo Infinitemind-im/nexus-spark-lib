@@ -68,6 +68,14 @@ make clean         # remove build artifacts
 
 ## Key dependencies
 
+Bulk extraction reads the active tenant connector's `config.credentials` from
+`nexus_system.connectors` when no `bf__<connector_id>__credentials` / `dsn`
+Variable is configured. The registered `system_type` identifies the provider;
+`connector_type` can identify its transport (`rest_api`, `xmlrpc`). Optional
+bulk extraction settings live in `config.backfill`. Credentials are resolved
+inside the tenant transaction and never returned in task results. API extraction
+temporarily binds and restores vendor environment variables under a process lock.
+
 | Package | Purpose |
 |---------|---------|
 | `pyspark>=3.5,<4.0` | Spark runtime |
