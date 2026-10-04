@@ -1,6 +1,7 @@
 """Isolated real MinIO: exact archived raw bytes precede Kafka publication."""
 import hashlib
 import json
+import os
 import subprocess
 import time
 from types import SimpleNamespace
@@ -15,7 +16,9 @@ from nexus_spark_lib.backfill_archive import MinioRawArchive
 
 @pytest.mark.integration
 def test_real_minio_preserves_envelopes_and_separates_source_scopes(monkeypatch):
-    image = "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
+    image = os.environ.get("BACKFILL_MINIO_FIXTURE_IMAGE")
+    if not image:
+        raise RuntimeError("Build the pinned Core MinIO fixture and set BACKFILL_MINIO_FIXTURE_IMAGE")
     container = subprocess.check_output(["docker", "run", "--rm", "-d", "-p", "127.0.0.1::9000",
         "-e", "MINIO_ROOT_USER=archive-fixture", "-e", "MINIO_ROOT_PASSWORD=archive-fixture-password",
         image, "server", "/data"], text=True).strip()
