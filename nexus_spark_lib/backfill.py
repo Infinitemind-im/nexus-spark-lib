@@ -9,19 +9,75 @@ from datetime import datetime, timezone
 import requests
 from confluent_kafka import Producer  # type: ignore
 from contextlib import contextmanager
+from contextvars import ContextVar
 from threading import RLock
+from uuid import uuid4
 from nexus_spark_lib.extract_registry import ExtractRegistry, registry
 try:
     from airflow.models import Variable  # type: ignore
 except Exception:  # noqa: BLE001
     Variable = None  # type: ignore
 
+_batch_id = ContextVar("nexus_backfill_batch_id", default=None)
+
+
+@contextmanager
+def backfill_batch(batch_id=None):
+    """One extraction identity, scoped to the task without mutating process env."""
+    identity = batch_id or _batch_id.get() or os.getenv("BACKFILL_BATCH_ID") or str(uuid4())
+    if not isinstance(identity, str) or not identity:
+        raise ValueError("Backfill batch identity must be a nonempty string")
+    token = _batch_id.set(identity)
+    try:
+        yield identity
+    finally:
+        _batch_id.reset(token)
+
 
 class ConfirmedProducer:
-    def __init__(self, config):
+    def __init__(self, config, archive=None):
         self.client = Producer(config)
         self.pending = 0
         self.errors = []
+        self.archive = archive
+        self.raw_buffer = []
+        self.raw_bytes = 0
+        self.raw_scope = None
+        self.archive_chunks = 0
+        self.archive_records = 0
+
+    def publish_raw(self, topic, *, key, value):
+        if self.archive is None:
+            return self.produce(topic, key=key, value=value)
+        from nexus_spark_lib.backfill_archive import MAX_BYTES, MAX_RECORDS, raw_scope
+        scope = raw_scope(topic, key, value)
+        size = len(value) + 1
+        if size > MAX_BYTES:
+            raise ValueError("Raw archive record exceeds byte bounds")
+        if self.raw_buffer and (scope != self.raw_scope or self.raw_bytes + size > MAX_BYTES):
+            self._publish_archived_chunk()
+        self.raw_scope = scope
+        self.raw_buffer.append(value)
+        self.raw_bytes += size
+        if len(self.raw_buffer) >= MAX_RECORDS:
+            self._publish_archived_chunk()
+
+    def _publish_archived_chunk(self):
+        if not self.raw_buffer:
+            return
+        wires = self.raw_buffer
+        tenant, _, _, _, topic = self.raw_scope
+        self.archive.persist(self.raw_scope, wires)
+        # Clear after confirmed storage. Kafka failure aborts the extraction;
+        # task retry is at least once, while the source bytes are already durable.
+        self.raw_buffer = []
+        self.raw_bytes = 0
+        self.archive_chunks += 1
+        self.archive_records += len(wires)
+        for wire in wires:
+            self.produce(topic, key=tenant.encode(), value=wire)
+        # Bound Kafka's in-flight queue as well as the archive buffer.
+        self._confirm_delivery(60)
 
     def produce(self, *args, **kwargs):
         self.pending += 1
@@ -39,6 +95,10 @@ class ConfirmedProducer:
         self.client.poll(0)
 
     def flush(self, timeout=60):
+        self._publish_archived_chunk()
+        return self._confirm_delivery(timeout)
+
+    def _confirm_delivery(self, timeout):
         remaining = self.client.flush(timeout)
         if remaining or self.pending or self.errors:
             raise RuntimeError("Backfill Kafka delivery was not confirmed")
@@ -66,8 +126,10 @@ def _producer():
             "Missing Kafka bootstrap: set BACKFILL_KAFKA_BOOTSTRAP, "
             "NEXUS_KAFKA_BOOTSTRAP, KAFKA_BOOTSTRAP_SERVERS, or Airflow Variable nexus_kafka_bootstrap"
         )
+    from nexus_spark_lib.backfill_archive import archive_from_settings
+    archive = archive_from_settings(lambda name: os.environ.get(name) or _get_var(name))
     return ConfirmedProducer({"bootstrap.servers": bootstrap, "enable.idempotence": True,
-                              "acks": "all", "delivery.timeout.ms": 30000})
+                              "acks": "all", "delivery.timeout.ms": 30000}, archive=archive)
 
 
 def _get_var(name: str, default: str | None = None) -> str | None:
@@ -157,7 +219,7 @@ def _base_payload(
         "source_op": "SNAPSHOT_READ",
         "source_ts": source_ts,
         "after_payload": after_payload,
-        "backfill_batch_id": os.environ.get("BACKFILL_BATCH_ID", str(int(time.time()))),
+        "backfill_batch_id": _batch_id.get() or os.environ.get("BACKFILL_BATCH_ID") or str(uuid4()),
     }
     if window:
         payload["window"] = window
@@ -177,7 +239,8 @@ def publish_raw_record(producer, topic, payload):
                  if key not in ("tenant_id","source_system","source_record_id")},
         permission_scope={}, event_action="read",
         correlation_id=payload["backfill_batch_id"])
-    producer.produce(topic, key=message.tenant_id.encode(), value=message.to_json())
+    publish = producer.publish_raw if isinstance(producer, ConfirmedProducer) else producer.produce
+    publish(topic, key=message.tenant_id.encode(), value=message.to_json())
 
 
 def _sf_env() -> tuple[str, str, str, str, str | None, str | None, str | None]:
@@ -226,21 +289,32 @@ def _sf_request(method: str, url: str, **kwargs) -> requests.Response:
         )
 
         if not retryable or attempt == max_attempts:
-            try:
-                body = resp.text[:500]
-            except Exception:
-                body = "<response body unavailable>"
+            # Responses and URLs may contain source data or authentication
+            # details. Report only the status and a bounded protocol code.
+            if not isinstance(error_code,str) or not re.fullmatch(r"[A-Z0-9_]{1,64}",error_code):
+                error_code = "unknown"
             raise RuntimeError(
-                f"Salesforce API error {resp.status_code} ({error_code or 'unknown'}) for {url}: {body}"
+                f"Salesforce API error {resp.status_code} ({error_code})"
             )
 
         sleep_s = min(max_sleep, base_sleep * (2 ** (attempt - 1)))
         time.sleep(sleep_s)
 
-    raise RuntimeError(f"Salesforce request exhausted retries for {url}")
+    raise RuntimeError("Salesforce request exhausted retries")
 
 
 def _sf_token() -> tuple[str, str]:
+    access_token = os.getenv("SALESFORCE_ACCESS_TOKEN")
+    if access_token:
+        # A supplied session token needs only its own instance URL. It must
+        # not invoke a failing refresh grant or require unrelated OAuth keys.
+        from urllib.parse import urlsplit
+        base = (os.getenv("SALESFORCE_INSTANCE_URL") or "").rstrip("/")
+        parsed = urlsplit(base)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+                or parsed.password or parsed.path or parsed.query or parsed.fragment):
+            raise ValueError("Direct Salesforce token requires an HTTPS instance URL")
+        return access_token,base
     login_base, api_base, cid, csec, user, pwd, refresh_token = _sf_env()
     url = f"{login_base}/services/oauth2/token"
     ctype = (os.getenv("SALESFORCE_CONNECTION_TYPE") or "").lower()
@@ -771,19 +845,22 @@ class DatabaseExtractor:
 
 def run_snapshot_extract(connector, exclude_system_tables, publish_topic):
     _validate_connector(connector)
-    return registry.get(connector.source_type).snapshot(connector,publish_topic,exclude_system_tables)
+    with backfill_batch():
+        return registry.get(connector.source_type).snapshot(connector,publish_topic,exclude_system_tables)
 
 
 def run_full_snapshot_extract(connector, publish_topic):
     _validate_connector(connector)
-    return registry.get(connector.source_type).snapshot(connector,publish_topic,True,full_snapshot=True)
+    with backfill_batch():
+        return registry.get(connector.source_type).snapshot(connector,publish_topic,True,full_snapshot=True)
 
 
 def run_windowed_backfill(connector,start_date,end_date,tables_selector,exclude_system_tables,
                           publish_topic,table_name=None,timestamp_column=None):
     _validate_connector(connector)
-    return registry.get(connector.source_type).window(connector,publish_topic,start_date,end_date,
-        table_name=table_name,timestamp_column=timestamp_column)
+    with backfill_batch():
+        return registry.get(connector.source_type).window(connector,publish_topic,start_date,end_date,
+            table_name=table_name,timestamp_column=timestamp_column)
 
 
 def _validate_connector(connector):
