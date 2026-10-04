@@ -76,6 +76,34 @@ bulk extraction settings live in `config.backfill`. Credentials are resolved
 inside the tenant transaction and never returned in task results. API extraction
 temporarily binds and restores vendor environment variables under a process lock.
 
+Salesforce registrations can use `credentials.access_token` with
+`credentials.instance_url` for a direct session, without OAuth client or refresh
+credentials. The instance must use HTTPS. The token remains subject to Salesforce
+expiry and revocation; authentication errors fail extraction without logging the
+token or opaque response body.
+
+### Prospective raw archive
+
+Set `BACKFILL_RAW_ARCHIVE_BUCKET` to an existing MinIO bucket to archive new
+backfill extractions using the existing `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY` and
+`MINIO_SECRET_KEY` settings (environment or Airflow Variables). The default prefix
+is `backfill/v1`; `BACKFILL_RAW_ARCHIVE_PREFIX` can override it. No bucket is
+created automatically, and incomplete configuration fails extraction.
+
+Each NDJSON chunk preserves the exact Core messages sent to Kafka, with at most
+1000 records and 16 MiB. Tenant, connector, batch, table and topic scopes are
+separate hash-based paths; content SHA-256 identifies each chunk. The object write
+and stored metadata are confirmed before any Kafka message in that chunk is sent.
+Storage failure or failed Kafka delivery stops completion and source progress.
+Oversized individual messages are rejected. Kafka/task retries remain at least
+once; identical serialized chunks reuse the same object key, while a re-extraction
+can produce new message IDs. Incomplete runs can leave archived chunks.
+
+This captures future raw data. It does not reconstruct missing history, produce a
+Delta table, assert a complete migration corpus, freeze a replay plan, or coordinate
+CDC. Migration remains gated on those separate prerequisites. Raw archives retain
+source data and require the same access and retention controls as the source.
+
 | Package | Purpose |
 |---------|---------|
 | `pyspark>=3.5,<4.0` | Spark runtime |

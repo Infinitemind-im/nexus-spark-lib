@@ -14,6 +14,7 @@ _ENV_FIELDS = {
         "client_id": "SALESFORCE_CLIENT_ID", "client_secret": "SALESFORCE_CLIENT_SECRET",
         "refresh_token": "SALESFORCE_REFRESH_TOKEN", "username": "SALESFORCE_USERNAME",
         "password": "SALESFORCE_PASSWORD", "security_token": "SALESFORCE_SECURITY_TOKEN",
+        "access_token": "SALESFORCE_ACCESS_TOKEN", "connection_type": "SALESFORCE_CONNECTION_TYPE",
     },
     "servicenow": {"instance_url": "SERVICENOW_INSTANCE_URL",
                    "username": "SERVICENOW_USERNAME", "password": "SERVICENOW_PASSWORD"},
